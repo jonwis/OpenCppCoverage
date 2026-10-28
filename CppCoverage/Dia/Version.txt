@@ -1,0 +1,11 @@
+Microsoft Debug Interface Access (DIA) runtime
+File version: 14.44.35215.0
+Source: Visual Studio Build Tools 2022, version 17.14.43 (17.14.37824.6)
+
+Vendored DLLs come from the installed Visual Studio DIA SDK:
+  x86\msdia140.dll: DIA SDK\bin\msdia140.dll
+  x64\msdia140.dll: DIA SDK\bin\amd64\msdia140.dll
+  arm64\msdia140.dll: DIA SDK\bin\arm64\msdia140.dll
+
+MSBuild copies the runtime matching the tool's target architecture into its
+output directory. Headers and diaguids.lib come from the installed DIA SDK.
