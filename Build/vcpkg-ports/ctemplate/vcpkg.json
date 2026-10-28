@@ -1,0 +1,9 @@
+{
+  "name": "ctemplate",
+  "version-date": "2020-09-14",
+  "port-version": 7,
+  "description": "C++ CTemplate system with native Windows ARM64 support",
+  "homepage": "https://github.com/OlafvdSpek/ctemplate",
+  "license": "BSD-3-Clause",
+  "supports": "windows"
+}
