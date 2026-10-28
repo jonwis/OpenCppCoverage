@@ -61,6 +61,9 @@ namespace CppCoverage
 			const std::string all = "*";
 
 			options.add_options()
+				(ProgramOptions::SymbolFreeOption.c_str(), "Collect basic-block RVA coverage without loading symbols. Only binary export is supported.")
+				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
+				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Search directory for matching images during --resolve. Can have multiple occurrences.")
 				(ProgramOptions::SelectedModulesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
 				"The pattern that module's paths should match. Can have multiple occurrences.")
@@ -128,6 +131,9 @@ namespace CppCoverage
 	const std::string ProgramOptions::OptimizedBuildOption = "optimized_build";
 	const std::string ProgramOptions::ExcludedLineRegexOption = "excluded_line_regex";
 	const std::string ProgramOptions::SubstitutePdbSourcePathOption = "substitute_pdb_source_path";
+	const std::string ProgramOptions::SymbolFreeOption = "symbol-free";
+	const std::string ProgramOptions::ResolveOption = "resolve";
+	const std::string ProgramOptions::ModuleDirectoryOption = "module_dir";
     const std::string ProgramOptions::StopOnAssertOption = "stop_on_assert";
 
 	//-------------------------------------------------------------------------

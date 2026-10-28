@@ -51,6 +51,12 @@ namespace CppCoverage
 		const Patterns& GetModulePatterns() const;
 		const Patterns& GetSourcePatterns() const;
 		const StartInfo* GetStartInfo() const;
+		void EnableSymbolFreeMode() { symbolFree_ = true; }
+		bool IsSymbolFreeModeEnabled() const { return symbolFree_; }
+		void SetResolvePath(const std::filesystem::path& path) { resolvePath_ = path; }
+		const boost::optional<std::filesystem::path>& GetResolvePath() const { return resolvePath_; }
+		void AddModuleDirectory(const std::filesystem::path& path) { moduleDirectories_.push_back(path); }
+		const std::vector<std::filesystem::path>& GetModuleDirectories() const { return moduleDirectories_; }
 
 		void SetLogLevel(LogLevel);
 		LogLevel GetLogLevel() const;
@@ -98,6 +104,9 @@ namespace CppCoverage
 		Patterns modules_;
 		Patterns sources_;
 		boost::optional<StartInfo> optionalStartInfo_;
+		bool symbolFree_ = false;
+		boost::optional<std::filesystem::path> resolvePath_;
+		std::vector<std::filesystem::path> moduleDirectories_;
 
 		LogLevel logLevel_;
 		bool isPluginModeEnabled_;

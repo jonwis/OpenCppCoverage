@@ -32,10 +32,9 @@
 #include "CoverageDataSerializer.hpp"
 #include "ProtoBuff.hpp"
 
-namespace pb = ProtoBuff;
-
 namespace Exporter
 {
+	namespace pb = ProtoBuff;
 	namespace
 	{
 		//---------------------------------------------------------------------

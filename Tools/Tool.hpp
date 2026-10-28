@@ -18,6 +18,7 @@
 
 #include <string>
 #include <functional>
+#include <vector>
 
 #include <filesystem>
 #include <boost/optional/optional_fwd.hpp>
@@ -62,6 +63,11 @@ namespace Tools
 
 	TOOLS_DLL void CreateParentFolderIfNeeded(const std::filesystem::path& path);
 	TOOLS_DLL bool FileExists(const std::filesystem::path& path);
-}
 
+	TOOLS_DLL int RunProcess(
+		const std::filesystem::path& program,
+		const std::vector<std::wstring>& arguments,
+		std::string* output = nullptr,
+		bool captureStandardError = false);
+}
 

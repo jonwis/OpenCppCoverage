@@ -453,13 +453,58 @@ namespace CppCoverage
 		AddExcludedLineRegexes(variablesMap, options);
 		AddSubstitutePdbSourcePaths(variablesMap, options);
 
-		if (!options.GetStartInfo() && options.GetInputCoveragePaths().empty())
+		if (variablesMap.IsOptionSelected(ProgramOptions::SymbolFreeOption))
+			options.EnableSymbolFreeMode();
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::ResolveOption))
+		{
+			if (!fs::is_regular_file(*path))
+				throw Plugin::OptionsParserException("--resolve requires an existing RVA coverage file.");
+			options.SetResolvePath(*path);
+		}
+		if (const auto* directories = variablesMap.GetOptionalValue<std::vector<std::string>>(ProgramOptions::ModuleDirectoryOption))
+		{
+			for (const auto& directory : *directories)
+			{
+				if (!fs::is_directory(directory))
+					throw Plugin::OptionsParserException("--module_dir requires an existing directory.");
+				options.AddModuleDirectory(directory);
+			}
+		}
+		if (options.IsSymbolFreeModeEnabled() &&
+			(!options.GetStartInfo() || options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
+			throw Plugin::OptionsParserException("--symbol-free requires a program and cannot be combined with --resolve or --input_coverage.");
+		if (options.GetResolvePath() && (options.GetStartInfo() || !options.GetInputCoveragePaths().empty()))
+			throw Plugin::OptionsParserException("--resolve cannot be combined with a program or --input_coverage.");
+		if (!options.GetModuleDirectories().empty() && !options.GetResolvePath())
+			throw Plugin::OptionsParserException("--module_dir requires --resolve.");
+		if (options.IsSymbolFreeModeEnabled())
+		{
+			const auto& values = variablesMap.GetVariablesMap();
+			if (!values.at(ProgramOptions::SelectedSourcesOption).defaulted() ||
+				variablesMap.IsOptionSelected(ProgramOptions::ExcludedSourcesOption) ||
+				!options.GetUnifiedDiffSettingsCollection().empty() ||
+				!options.GetExcludedLineRegexes().empty() ||
+				options.IsOptimizedBuildSupportEnabled())
+				throw Plugin::OptionsParserException("Apply source filters during --resolve. --optimized_build is unnecessary for basic-block coverage.");
+		}
+		if (options.GetResolvePath() && options.IsOptimizedBuildSupportEnabled())
+			throw Plugin::OptionsParserException("--optimized_build applies to symbol-based collection.");
+
+		if (!options.GetStartInfo() && options.GetInputCoveragePaths().empty() && !options.GetResolvePath())
 			throw Plugin::OptionsParserException(
 			    "You must specify a program to execute or use --" +
 			    ProgramOptions::InputCoverageValue);
 
 		for (const auto& optionParser : optionParsers_)
 			optionParser->ParseOption(variablesMap, options);
+		if (options.IsSymbolFreeModeEnabled())
+		{
+			for (const auto& output : options.GetExports())
+			{
+				if (output.GetType() != OptionsExportType::Binary)
+					throw Plugin::OptionsParserException("--symbol-free supports only --export_type binary[:file.cov]. Use --resolve for reports.");
+			}
+		}
 		return options;
 	}
 

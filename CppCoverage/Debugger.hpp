@@ -19,7 +19,9 @@
 #include <boost/optional/optional.hpp>
 
 #include <unordered_map>
+#include <unordered_set>
 #include <Windows.h>
+#include <wil/resource.h>
 #include "CppCoverageExport.hpp"
 
 
@@ -59,11 +61,13 @@ namespace CppCoverage
 			DWORD dwThreadId);
 
 		void OnExitThread(DWORD dwProcessId);
+		void RemoveProcessThreads(DWORD processId);
 
 		HANDLE GetProcessHandle(DWORD dwProcessId) const;
 		HANDLE GetThreadHandle(DWORD dwThreadId) const;
 
 		struct ProcessStatus;
+		boost::optional<int> ReapExitedProcesses(IDebugEventsHandler&);
 
 		ProcessStatus HandleDebugEvent(const DEBUG_EVENT&, IDebugEventsHandler&);
 
@@ -77,13 +81,12 @@ namespace CppCoverage
 		ProcessStatus OnException(const DEBUG_EVENT&, IDebugEventsHandler&, HANDLE hProcess, HANDLE hThread) const;
 
 	private:
-		std::unordered_map<DWORD, HANDLE> processHandles_;
-		std::unordered_map<DWORD, HANDLE> threadHandles_;
+		std::unordered_map<DWORD, wil::unique_handle> processHandles_;
+		std::unordered_map<DWORD, wil::unique_handle> threadHandles_;
+		std::unordered_set<DWORD> completedProcessIds_;
 		boost::optional<DWORD> rootProcessId_;
 		bool coverChildren_;
 		bool continueAfterCppException_;
         bool stopOnAssert_;
     };
 }
-
-

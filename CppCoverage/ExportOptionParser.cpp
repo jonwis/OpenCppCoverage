@@ -130,6 +130,9 @@ namespace CppCoverage
 		auto exportTypeStrCollection =
 		    variablesMap.GetValue<std::vector<std::string>>(
 		        ExportOptionParser::ExportTypeOption);
+		if (options.IsSymbolFreeModeEnabled() &&
+			variablesMap.GetVariablesMap().at(ExportTypeOption).defaulted())
+			exportTypeStrCollection = { ExportTypeBinaryValue };
 
 		for (const auto& exportTypeStr : exportTypeStrCollection)
 		{

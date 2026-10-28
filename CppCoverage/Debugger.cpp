@@ -18,7 +18,6 @@
 #include "Debugger.hpp"
 
 #include "tools/Log.hpp"
-#include "tools/ScopedAction.hpp"
 
 #include "Process.hpp"
 #include "CppCoverageException.hpp"
@@ -36,6 +35,15 @@ namespace CppCoverage
 			LOG_ERROR << "Debugee process terminate unexpectedly:"
 				<< "(type:" << ripInfo.dwType << ")"
 				<< GetErrorMessage(ripInfo.dwError);
+		}
+
+		wil::unique_handle DuplicateDebugHandle(HANDLE handle)
+		{
+			wil::unique_handle copy;
+			THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(
+				GetCurrentProcess(), handle, GetCurrentProcess(),
+				copy.put(), 0, FALSE, DUPLICATE_SAME_ACCESS));
+			return copy;
 		}
 	}	
 
@@ -80,12 +88,20 @@ namespace CppCoverage
 
 		processHandles_.clear();
 		threadHandles_.clear();
+		completedProcessIds_.clear();
 		rootProcessId_ = boost::none;
 
 		while (!exitCode || !processHandles_.empty())
 		{
-			if (!WaitForDebugEvent(&debugEvent, INFINITE))
-				THROW_LAST_ERROR(L"Error WaitForDebugEvent:", GetLastError());
+			if (!WaitForDebugEvent(&debugEvent, 1000))
+			{
+				const auto error = GetLastError();
+				THROW_WIN32_IF(error, error != ERROR_SEM_TIMEOUT);
+				const auto completed = ReapExitedProcesses(debugEventsHandler);
+				if (completed && !exitCode)
+					exitCode = completed;
+				continue;
+			}
 
 			ProcessStatus processStatus = HandleDebugEvent(debugEvent, debugEventsHandler);
 			
@@ -96,11 +112,43 @@ namespace CppCoverage
 
 			auto continueStatus = boost::get_optional_value_or(processStatus.continueStatus_, DBG_CONTINUE);
 
-			if (!ContinueDebugEvent(debugEvent.dwProcessId, debugEvent.dwThreadId, continueStatus))
-				THROW_LAST_ERROR("Error in ContinueDebugEvent:", GetLastError());
+			THROW_IF_WIN32_BOOL_FALSE(ContinueDebugEvent(
+				debugEvent.dwProcessId, debugEvent.dwThreadId, continueStatus));
 		}
 
 		return *exitCode;
+	}
+
+	boost::optional<int> Debugger::ReapExitedProcesses(IDebugEventsHandler& handler)
+	{
+		boost::optional<int> rootExitCode;
+		for (auto process = processHandles_.begin(); process != processHandles_.end();)
+		{
+			const auto wait = WaitForSingleObject(process->second.get(), 0);
+			THROW_LAST_ERROR_IF(wait == WAIT_FAILED);
+			if (wait != WAIT_OBJECT_0)
+			{
+				++process;
+				continue;
+			}
+			DWORD code = 0;
+			THROW_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(process->second.get(), &code));
+			const auto id = process->first;
+			HANDLE lastThread = nullptr;
+			for (const auto& thread : threadHandles_)
+				if (GetProcessIdOfThread(thread.second.get()) == id)
+					lastThread = thread.second.get();
+			EXIT_PROCESS_DEBUG_INFO info{code};
+			LOG_WARNING << "Process " << id << " exited without an exit debug event.";
+			handler.OnExitProcess(process->second.get(), lastThread, info);
+			if (rootProcessId_ == id)
+				rootExitCode = static_cast<int>(code);
+			DebugActiveProcessStop(id);
+			RemoveProcessThreads(id);
+			completedProcessIds_.insert(id);
+			process = processHandles_.erase(process);
+		}
+		return rootExitCode;
 	}
 	
 	//-------------------------------------------------------------------------
@@ -110,6 +158,16 @@ namespace CppCoverage
 	{
 		auto dwProcessId = debugEvent.dwProcessId;
 		auto dwThreadId = debugEvent.dwThreadId;
+
+		if (debugEvent.dwDebugEventCode != CREATE_PROCESS_DEBUG_EVENT &&
+		    completedProcessIds_.count(dwProcessId))
+		{
+			if (debugEvent.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT)
+			{
+				wil::unique_handle file{debugEvent.u.LoadDll.hFile};
+			}
+			return {};
+		}
 
 		switch (debugEvent.dwDebugEventCode)
 		{
@@ -146,7 +204,7 @@ namespace CppCoverage
 			case LOAD_DLL_DEBUG_EVENT:
 			{
 				const auto& loadDll = debugEvent.u.LoadDll;
-				Tools::ScopedAction scopedAction{ [&loadDll]{ CloseHandle(loadDll.hFile); } };
+				wil::unique_handle file{loadDll.hFile};
 				debugEventsHandler.OnLoadDll(hProcess, hThread, loadDll);
 				break;
 			}
@@ -224,19 +282,22 @@ namespace CppCoverage
 		IDebugEventsHandler& debugEventsHandler)
 	{		
 		const auto& processInfo = debugEvent.u.CreateProcessInfo;
-		Tools::ScopedAction scopedAction{ [&processInfo]{ CloseHandle(processInfo.hFile); } };
+		wil::unique_handle file{processInfo.hFile};
 
 		LOG_DEBUG << "Create Process:" << debugEvent.dwProcessId;
 
 		if (!rootProcessId_ && processHandles_.empty())
 			rootProcessId_ = debugEvent.dwProcessId;
 
-		if (!processHandles_.emplace(debugEvent.dwProcessId, processInfo.hProcess).second)
+		completedProcessIds_.erase(debugEvent.dwProcessId);
+		if (!processHandles_.emplace(debugEvent.dwProcessId, DuplicateDebugHandle(processInfo.hProcess)).second)
 			THROW("Process id already exist");
-				
-		debugEventsHandler.OnCreateProcess(processInfo);
 
 		OnCreateThread(processInfo.hThread, debugEvent.dwThreadId);
+		auto retainedInfo = processInfo;
+		retainedInfo.hProcess = GetProcessHandle(debugEvent.dwProcessId);
+		retainedInfo.hThread = GetThreadHandle(debugEvent.dwThreadId);
+		debugEventsHandler.OnCreateProcess(retainedInfo);
 	}
 
 	//-------------------------------------------------------------------------
@@ -246,13 +307,14 @@ namespace CppCoverage
 		HANDLE hThread,
 		IDebugEventsHandler& debugEventsHandler)
 	{
-		OnExitThread(debugEvent.dwThreadId);
 		auto processId = debugEvent.dwProcessId;
 
 		LOG_DEBUG << "Exit Process:" << processId;
 
 		auto exitProcess = debugEvent.u.ExitProcess;
 		debugEventsHandler.OnExitProcess(hProcess, hThread, exitProcess);
+		RemoveProcessThreads(processId);
+		completedProcessIds_.insert(processId);
 
 		if (processHandles_.erase(processId) != 1)
 			THROW("Cannot find exited process.");
@@ -267,7 +329,7 @@ namespace CppCoverage
 	{
 		LOG_DEBUG << "Create Thread:" << dwThreadId;
 
-		if (!threadHandles_.emplace(dwThreadId, hThread).second)
+		if (!threadHandles_.emplace(dwThreadId, DuplicateDebugHandle(hThread)).second)
 			THROW("Thread id already exist");
 	}
 	
@@ -280,16 +342,29 @@ namespace CppCoverage
 			THROW("Cannot find exited thread.");
 	}
 
+	void Debugger::RemoveProcessThreads(DWORD processId)
+	{
+		for (auto thread = threadHandles_.begin(); thread != threadHandles_.end();)
+		{
+			const auto owner = GetProcessIdOfThread(thread->second.get());
+			THROW_LAST_ERROR_IF(!owner);
+			if (owner == processId)
+				thread = threadHandles_.erase(thread);
+			else
+				++thread;
+		}
+	}
+
 	//-------------------------------------------------------------------------
 	HANDLE Debugger::GetProcessHandle(DWORD dwProcessId) const
 	{
-		return processHandles_.at(dwProcessId);
+		return processHandles_.at(dwProcessId).get();
 	}
 
 	//-------------------------------------------------------------------------
 	HANDLE Debugger::GetThreadHandle(DWORD dwThreadId) const
 	{
-		return threadHandles_.at(dwThreadId);
+		return threadHandles_.at(dwThreadId).get();
 	}
 
 	//-------------------------------------------------------------------------

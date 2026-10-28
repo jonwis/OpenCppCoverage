@@ -20,7 +20,7 @@
 #include <Windows.h>
 #include <diacreate.h>
 #include <dia2.h>
-#include <atlbase.h>
+#include <wrl/client.h>
 
 #include <filesystem>
 #include <boost/algorithm/string.hpp>
@@ -31,6 +31,8 @@
 
 namespace CppCoverage
 {
+	using Microsoft::WRL::ComPtr;
+
 	namespace
 	{
 		//----------------------------------------------------------------------
@@ -81,31 +83,32 @@ namespace CppCoverage
 		template <typename Value, typename Collection, typename Fct>
 		void EnumerateCollection(Collection& collection, Fct fct)
 		{
-			CComPtr<Value> value;
+			ComPtr<Value> value;
 			ULONG celtFetched;
 			while (collection.Next(1, &value, &celtFetched) == S_OK &&
 			       celtFetched == 1 && value != nullptr)
 			{
-				fct(*value);
+				fct(*value.Get());
 				value = nullptr;
 			}
 		}
 
 		//----------------------------------------------------------------------
-		CComPtr<IDiaEnumSourceFiles> GetEnumSourceFiles(IDiaSession& session)
+		ComPtr<IDiaEnumSourceFiles> GetEnumSourceFiles(IDiaSession& session)
 		{
-			CComPtr<IDiaEnumTables> tables;
+			ComPtr<IDiaEnumTables> tables;
 			if (session.getEnumTables(&tables) != S_OK || !tables)
 				THROW("DIA: Cannot get tables");
 
-			CComPtr<IDiaEnumSourceFiles> sourceFiles;
+			ComPtr<IDiaEnumSourceFiles> sourceFiles;
 
-			EnumerateCollection<IDiaTable>(*tables, [&](IDiaTable& table) {
+			EnumerateCollection<IDiaTable>(*tables.Get(), [&](IDiaTable& table) {
 				if (!sourceFiles)
 				{
-					CComPtr<IDiaEnumSourceFiles> currentSourceFiles;
+					ComPtr<IDiaEnumSourceFiles> currentSourceFiles;
 					if (table.QueryInterface(_uuidof(IDiaEnumSourceFiles),
-					                         (void**)&currentSourceFiles) ==
+					                         reinterpret_cast<void**>(
+					                             currentSourceFiles.GetAddressOf())) ==
 					    S_OK)
 					{
 						sourceFiles = currentSourceFiles;
@@ -119,6 +122,11 @@ namespace CppCoverage
 		//----------------------------------------------------------------------
 		struct DiaLoadCallback : public IDiaLoadCallback
 		{
+			explicit DiaLoadCallback(bool allowSymbolServer)
+			    : allowSymbolServer_{allowSymbolServer}
+			{
+			}
+
 			//------------------------------------------------------------------
 			HRESULT STDMETHODCALLTYPE QueryInterface(
 			    REFIID riid,
@@ -126,8 +134,9 @@ namespace CppCoverage
 			{
 				if (!ppvObject)
 					return E_POINTER;
+				*ppvObject = nullptr;
 
-				if (riid == IID_IDiaLoadCallback)
+				if (riid == __uuidof(IUnknown) || riid == IID_IDiaLoadCallback)
 				{
 					*ppvObject = this;
 					return S_OK;
@@ -181,30 +190,35 @@ namespace CppCoverage
 			//------------------------------------------------------------------
 			HRESULT STDMETHODCALLTYPE RestrictSymbolServerAccess() override
 			{
-				return S_OK;
+				return allowSymbolServer_ ? S_FALSE : S_OK;
 			}
+
+			const bool allowSymbolServer_;
 		};
 
 		//----------------------------------------------------------------------
-		CComPtr<IDiaDataSource>
-		LoadDataForExe(const std::filesystem::path& path)
+		ComPtr<IDiaDataSource>
+		LoadDataForExe(const std::filesystem::path& path,
+		               const std::wstring& symbolSearchPath)
 		{
-			CComPtr<IDiaDataSource> sourcePtr;
+			ComPtr<IDiaDataSource> sourcePtr;
 
 			auto msDia = L"msdia140.dll";
 			if (NoRegCoCreate(msDia,
 			                  _uuidof(DiaSourceAlt),
 			                  _uuidof(IDiaDataSource),
-			                  (void**)&sourcePtr) != S_OK)
+			                  reinterpret_cast<void**>(sourcePtr.GetAddressOf())) != S_OK)
 			{
 				THROW(std::wstring(L"DIA: Cannot register dia. Make sure ") +
 				      msDia + L" is in the current directory.");
 			}
 
-			DiaLoadCallback diaLoadCallback;
+			DiaLoadCallback diaLoadCallback(!symbolSearchPath.empty());
 			if (!sourcePtr ||
 			    sourcePtr->loadDataForExe(
-			        path.wstring().c_str(), nullptr, &diaLoadCallback) != S_OK)
+			        path.wstring().c_str(),
+			        symbolSearchPath.empty() ? nullptr : symbolSearchPath.c_str(),
+			        &diaLoadCallback) != S_OK)
 			{
 				return nullptr;
 			}
@@ -215,7 +229,15 @@ namespace CppCoverage
 	//--------------------------------------------------------------------------
 	DebugInformationEnumerator::DebugInformationEnumerator(
 	    const std::vector<SubstitutePdbSourcePath>& substitutePdbSourcePaths)
-		: substitutePdbSourcePaths_{ substitutePdbSourcePaths }
+		: DebugInformationEnumerator(substitutePdbSourcePaths, L"")
+	{
+	}
+
+	DebugInformationEnumerator::DebugInformationEnumerator(
+	    const std::vector<SubstitutePdbSourcePath>& substitutePdbSourcePaths,
+	    const std::wstring& symbolSearchPath)
+		: substitutePdbSourcePaths_{substitutePdbSourcePaths},
+		  symbolSearchPath_{symbolSearchPath}
 	{
 	}
 
@@ -224,26 +246,26 @@ namespace CppCoverage
 	DebugInformationEnumerator::Enumerate(const std::filesystem::path& path,
 	                                      IDebugInformationHandler& handler)
 	{
-		auto sourcePtr = LoadDataForExe(path);
+		auto sourcePtr = LoadDataForExe(path, symbolSearchPath_);
 
 		if (!sourcePtr)
 			return false;
 
-		CComPtr<IDiaSession> sessionPtr;
+		ComPtr<IDiaSession> sessionPtr;
 		if (sourcePtr->openSession(&sessionPtr) != S_OK || !sessionPtr)
 			THROW("DIA: Cannot open session.");
 
-		auto sourceFiles = GetEnumSourceFiles(*sessionPtr);
+		auto sourceFiles = GetEnumSourceFiles(*sessionPtr.Get());
 		if (!sourceFiles)
 			THROW("DIA: cannot get SourceFiles");
 
 		EnumerateCollection<IDiaSourceFile>(
-		    *sourceFiles, [&](IDiaSourceFile& sourceFile) {
+		    *sourceFiles.Get(), [&](IDiaSourceFile& sourceFile) {
 			    auto filename = GetSourceFileName(sourceFile);
 			    if (handler.IsSourceFileSelected(filename))
 			    {
 				    lines_.clear();
-				    EnumLines(*sessionPtr, sourceFile, handler);
+				    EnumLines(*sessionPtr.Get(), sourceFile, handler);
 				    handler.OnSourceFile(filename, lines_);
 			    }
 		    });
@@ -256,12 +278,12 @@ namespace CppCoverage
 	                                      IDiaSourceFile& sourceFile,
 	                                      IDebugInformationHandler& handler)
 	{
-		CComPtr<IDiaEnumSymbols> symbols;
+		ComPtr<IDiaEnumSymbols> symbols;
 		if (sourceFile.get_compilands(&symbols) != S_OK || !symbols)
 			THROW("DIA: Cannot get compilands");
 
-		EnumerateCollection<IDiaSymbol>(*symbols, [&](IDiaSymbol& symbol) {
-			CComPtr<IDiaEnumLineNumbers> lines;
+		EnumerateCollection<IDiaSymbol>(*symbols.Get(), [&](IDiaSymbol& symbol) {
+			ComPtr<IDiaEnumLineNumbers> lines;
 
 			if (session.findLines(&symbol, &sourceFile, &lines) != S_OK ||
 			    !lines)
@@ -270,7 +292,7 @@ namespace CppCoverage
 			}
 
 			EnumerateCollection<IDiaLineNumber>(
-			    *lines, [&](IDiaLineNumber& lineNumber) {
+			    *lines.Get(), [&](IDiaLineNumber& lineNumber) {
 				    OnNewLine(session, lineNumber, handler);
 			    });
 		});
@@ -289,12 +311,15 @@ namespace CppCoverage
 		// Skip invalid lines
 		if (linenum != 0x00f00f00 && linenum != 0x00feefee)
 		{
-			ULONGLONG virtualAddress = 0;
-			if (lineNumber.get_virtualAddress(&virtualAddress) != S_OK)
-				THROW("DIA: Cannot get virtual address");
+			DWORD virtualAddress = 0;
+			if (lineNumber.get_relativeVirtualAddress(&virtualAddress) != S_OK)
+				THROW("DIA: Cannot get relative virtual address");
+			DWORD length = 0;
+			if (lineNumber.get_length(&length) != S_OK)
+				THROW("DIA: Cannot get line length");
 
-			CComPtr<IDiaSymbol> symbol;
-			if (session.findSymbolByVA(
+			ComPtr<IDiaSymbol> symbol;
+			if (session.findSymbolByRVA(
 			        virtualAddress, SymTagEnum::SymTagNull, &symbol) != S_OK ||
 			    !symbol)
 			{
@@ -305,7 +330,7 @@ namespace CppCoverage
 			if (symbol->get_symIndexId(&symIndex) != S_OK)
 				THROW("DIA: Cannot get symIndex");
 
-			lines_.emplace_back(linenum, virtualAddress, symIndex);
+			lines_.emplace_back(linenum, virtualAddress, symIndex, length);
 		}
 	}
 
