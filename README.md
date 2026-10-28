@@ -72,8 +72,26 @@ Maintaining this project and working with its community was a valuable experienc
 - **Coverage aggregation**: Run several code coverages and merge them into a single report.
  
 ## Requirements
-- Windows Vista or higher.
-- Microsoft Visual Studio 2008 or higher all editions **including Express edition**. It should also work with previous version of Visual Studio.
+- Windows 10 or later. ARM64EC and AMD64 emulation require Windows 11 on ARM64.
+- Matching PDBs for source reports. Symbol-free collection can run without PDBs.
+
+## Building
+
+Build `CppCoverage.sln` with Visual Studio 2022 and the v143 C++ tools. Install the
+Windows SDK, DIA SDK, and Visual Studio vcpkg component. ARM64 builds also require
+the ARM64 C++ tools; the mixed-ISA fixture requires the ARM64EC tools.
+The x64 C++/CLI test fixture requires C++/CLI support and the legacy
+`Microsoft.VisualStudio.QualityTools.UnitTestFramework` assembly.
+
+MSBuild restores the pinned dependencies from `vcpkg.json`. Dependencies are
+installed under `vcpkg_installed\<Platform>` so architecture builds remain
+independent. An existing vcpkg checkout can be selected with `/p:VcpkgRoot=...`.
+No machine-wide vcpkg integration is required.
+
+```powershell
+msbuild .\CppCoverage.sln /m /p:Configuration=Debug /p:Platform=x64
+msbuild .\CppCoverage.sln /m /p:Configuration=Debug /p:Platform=ARM64
+```
 
 ## Download
 OpenCppCoverage can be downloaded from [here](../../releases).
@@ -87,3 +105,42 @@ For example, *MySourcePath* can be *MyProject*, if your sources are located in *
 
 See [Getting Started](https://github.com/OpenCppCoverage/OpenCppCoverage/wiki) for more information about the usage.
 You can also have a look at [Command-line reference](https://github.com/OpenCppCoverage/OpenCppCoverage/wiki/Command-line-reference).
+
+### Collect without symbols, resolve later
+
+`--symbol-free` discovers basic blocks from the PE image and records whether each
+block executed. It uses entrypoints, exports, local import targets, TLS callbacks,
+CFG and EH continuation tables, exception/unwind metadata, and ARM64EC code maps
+as roots, then follows direct control flow with Capstone.
+
+```powershell
+.\OpenCppCoverage.exe --symbol-free --modules MyProgram.exe --export_type binary:run.cov -- .\MyProgram.exe arg1
+```
+
+The `.cov` file contains module identities, instruction sets, and RVA ranges with
+execution flags. Source paths and line mappings are added during resolution.
+Collection accepts binary exports and module filters; apply source and line
+filters when resolving.
+
+On a machine with matching binaries and PDBs:
+
+```powershell
+.\OpenCppCoverage.exe --resolve .\run.cov --module_dir C:\Build\bin --sources '*MyProject*' --export_type html:coverage --export_type cobertura:coverage.xml
+```
+
+Resolution searches the recorded image path and each `--module_dir`, verifies the
+image identity and SHA-256 hash, and loads matching symbols through DIA.
+Place PDBs beside the images or configure `_NT_SYMBOL_PATH`.
+Existing HTML, Cobertura, binary, and plugin exporters remain available.
+Resolve raw coverage before merging it with source coverage.
+
+Use the native ARM64 collector for ARM64, ARM64EC, and AMD64-on-ARM64 processes.
+The AMD64 collector supports AMD64 processes on AMD64 Windows.
+The existing symbol-based collection path remains available for x86 and AMD64.
+
+Discovery follows reachable code from known roots. Arbitrary indirect branches,
+jump tables, and generated code can leave blocks undiscovered. Only discovered
+code contributes to the resolved line-coverage denominator.
+Collection rejects mapped code that differs from its
+image after ordinary ASLR relocations. ARM64X dynamic relocations and runtime
+code modification are unsupported.

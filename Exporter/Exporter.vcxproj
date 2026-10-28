@@ -135,9 +135,6 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -156,9 +153,6 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
     <ClCompile>
@@ -177,9 +171,6 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -202,9 +193,6 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -227,9 +215,6 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
     <ClCompile>
@@ -252,13 +237,10 @@
     <PostBuildEvent>
       <Command>if not exist "$(OutDir)Template" mkdir "$(OutDir)Template" &amp;&amp; xcopy /s /y "$(ProjectDir)Html\Template" "$(OutDir)Template"</Command>
     </PostBuildEvent>
-    <PreBuildEvent>
-      <Command>"$(SolutionDir)\packages\thirdparty.1.4.0\installed\x86-windows\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Binary\BinaryExporter.hpp" />
-    <ClInclude Include="Binary\CoverageData.pb.h" />
+    <ClInclude Include="$(IntDir)CoverageData.pb.h" />
     <ClInclude Include="Binary\CoverageData.pb.hpp" />
     <ClInclude Include="Binary\ProtoBuff.hpp" />
     <ClInclude Include="CoberturaExporter.hpp" />
@@ -282,7 +264,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Binary\BinaryExporter.cpp" />
-    <ClCompile Include="Binary\CoverageData.pb.cc">
+    <ClCompile Include="$(IntDir)CoverageData.pb.cc">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">NotUsing</PrecompiledHeader>
@@ -338,7 +320,6 @@
       <SubType>Designer</SubType>
     </None>
     <None Include="Html\Template\SourceTemplate.html" />
-    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -245,7 +245,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Container.inl" />
-    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Plugin\Plugin.vcxproj">

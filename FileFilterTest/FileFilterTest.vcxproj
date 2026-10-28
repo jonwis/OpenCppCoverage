@@ -262,7 +262,6 @@
     <None Include="Data\test_add.diff" />
     <None Include="Data\test_git.diff" />
     <None Include="Data\test_remove.diff" />
-    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

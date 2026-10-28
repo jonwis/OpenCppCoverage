@@ -2,10 +2,17 @@
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.targets" Condition="Exists('$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.targets')" />
   <ItemDefinitionGroup Condition="'$(MSBuildProjectName)'=='Exporter'">
-    <PreBuildEvent>
-      <Command>"$(VcpkgInstalledDir)$(VcpkgHostTriplet)\tools\protobuf\protoc.exe" -I="$(ProjectDir)Binary" --cpp_out="$(ProjectDir)Binary" "$(ProjectDir)Binary\CoverageData.proto"</Command>
-    </PreBuildEvent>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
   </ItemDefinitionGroup>
+  <Target Name="GenerateCoverageProto" BeforeTargets="ClCompile"
+          Condition="'$(MSBuildProjectName)'=='Exporter'"
+          Inputs="$(ProjectDir)Binary\CoverageData.proto;$(ProjectDir)..\vcpkg.json;$(VcpkgInstalledDir)$(VcpkgHostTriplet)\tools\protobuf\protoc.exe"
+          Outputs="$(IntDir)CoverageData.pb.cc;$(IntDir)CoverageData.pb.h">
+    <MakeDir Directories="$(IntDir)" />
+    <Exec Command="&quot;$(VcpkgInstalledDir)$(VcpkgHostTriplet)\tools\protobuf\protoc.exe&quot; -I=&quot;$(ProjectDir)Binary&quot; --cpp_out=&quot;$(IntDir).&quot; &quot;$(ProjectDir)Binary\CoverageData.proto&quot;" />
+  </Target>
   <Target Name="CheckCoverageDependencies" BeforeTargets="PrepareForBuild">
     <Error Condition="!Exists('$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.targets')" Text="Install the Visual Studio vcpkg component, or set VcpkgRoot to an existing vcpkg checkout." />
   </Target>

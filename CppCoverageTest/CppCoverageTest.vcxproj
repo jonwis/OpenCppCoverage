@@ -307,7 +307,6 @@
     <None Include="OptimizedBuildVS2013\OptimizedBuildVS2013\OptimizedBuildVS2013.vcxproj" />
     <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.exe" />
     <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.pdb" />
-    <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup>

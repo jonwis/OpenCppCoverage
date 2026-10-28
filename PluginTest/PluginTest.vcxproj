@@ -246,7 +246,6 @@
     <ClCompile Include="PluginTest.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Plugin\Plugin.vcxproj">

@@ -96,7 +96,8 @@ namespace CppCoverage
 	{
 #if defined(_M_ARM64)
 		(void)hThread;
-		THROW("The legacy breakpoint API does not support native ARM64 code.");
+		THROW_HR_MSG(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED),
+			"The legacy breakpoint API does not support native ARM64 code.");
 #else
 		CONTEXT lcContext;
 		lcContext.ContextFlags = CONTEXT_ALL;

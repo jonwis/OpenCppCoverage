@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory)][string]$Fixture,
     [Parameter(Mandatory)][string]$Pdb,
     [Parameter(Mandatory)][string]$OutputDirectory,
-    [switch]$ExpectMixedIsa
+    [switch]$ExpectMixedIsa,
+    [string]$ConsoleFixture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,4 +75,40 @@ try {
 }
 finally {
     Move-Item -LiteralPath $hiddenImage -Destination $Fixture
+}
+
+if ($ConsoleFixture) {
+    $consoleSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\TestCoverageConsole\TestCoverageConsole.cpp')
+    foreach ($coverChildren in $false, $true) {
+        $childRaw = Join-Path $OutputDirectory "children-$coverChildren.cov"
+        $childXml = Join-Path $OutputDirectory "children-$coverChildren.xml"
+        $arguments = @('--symbol-free', '--modules', (Split-Path -Leaf $ConsoleFixture),
+                       '--export_type', "binary:$childRaw")
+        if ($coverChildren) { $arguments += '--cover_children' }
+        & $Tool @arguments -- $ConsoleFixture ChildProcess TestBasic TestSharedLib
+        if ($LASTEXITCODE -ne 0) { throw 'Child process collection failed.' }
+        & $Tool --resolve $childRaw --sources '*TestCoverageConsole.cpp' --export_type "cobertura:$childXml"
+        if ($LASTEXITCODE -ne 0) { throw 'Child process resolution failed.' }
+        [xml]$childReport = Get-Content -LiteralPath $childXml -Raw
+        foreach ($statement in 'TestCoverageConsole::RunTestBasic();', 'TestCoverageSharedLib::IsOdd(42);') {
+            $line = ($consoleSource | Select-String -SimpleMatch $statement).LineNumber
+            $hits = [int]$coverChildren
+            if (!$childReport.SelectNodes("//line[@number='$line' and @hits='$hits']").Count) {
+                throw "Incorrect child-only coverage with cover_children=$coverChildren`: $statement"
+            }
+        }
+    }
+
+    $reloadRaw = Join-Path $OutputDirectory 'reload.cov'
+    $reloadXml = Join-Path $OutputDirectory 'reload.xml'
+    & $Tool --symbol-free --modules TestHelper.dll --export_type "binary:$reloadRaw" -- $ConsoleFixture TestUnloadReloadDll
+    if ($LASTEXITCODE -ne 0) { throw 'DLL unload/reload collection failed.' }
+    & $Tool --resolve $reloadRaw --sources '*TestHelper*Tools.cpp' --export_type "cobertura:$reloadXml"
+    if ($LASTEXITCODE -ne 0) { throw 'DLL unload/reload resolution failed.' }
+    [xml]$reloadReport = Get-Content -LiteralPath $reloadXml -Raw
+    $helperSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\TestHelper\Tools.cpp')
+    $line = ($helperSource | Select-String -SimpleMatch 'void TestUnloadDll()').LineNumber + 1
+    if (!$reloadReport.SelectNodes("//line[@number='$line' and @hits='1']").Count) {
+        throw 'The reloaded DLL export was not covered.'
+    }
 }
