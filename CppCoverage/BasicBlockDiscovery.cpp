@@ -11,10 +11,9 @@
 
 #include <algorithm>
 #include <deque>
+#include <iterator>
 #include <limits>
-#include <map>
 #include <memory>
-#include <set>
 #include <stdexcept>
 
 namespace CppCoverage
@@ -22,6 +21,53 @@ namespace CppCoverage
 	namespace
 	{
 		constexpr size_t MaxInstructions = 4u * 1024u * 1024u;
+		// Start bytes encode length and flow; interior bytes reject overlapping targets.
+		constexpr uint8_t InstructionSizeMask = 0x0f;
+		constexpr uint8_t EndsBlock = 0x10;
+		constexpr uint8_t Arm64Instruction = 0x20;
+		constexpr uint8_t BlockLeader = 0x40;
+		constexpr uint8_t InstructionInterior = 0x80;
+
+		struct DiscoveryState
+		{
+			struct Chunk
+			{
+				uint32_t rva;
+				uint32_t size;
+				std::vector<uint8_t> bytes;
+			};
+
+			explicit DiscoveryState(const PeImage& image)
+			{
+				for (const auto& range : image.CodeRanges())
+					for (uint32_t offset = 0; offset < range.size;)
+					{
+						const auto size = (std::min)(range.size - offset, uint32_t{64 * 1024});
+						chunks.push_back({range.rva + offset, size, {}});
+						offset += size;
+					}
+			}
+
+			uint8_t& At(uint32_t rva)
+			{
+				if (!current || rva < current->rva || rva - current->rva >= current->size)
+				{
+					auto next = std::upper_bound(chunks.begin(), chunks.end(), rva,
+					    [](uint32_t value, const Chunk& chunk) { return value < chunk.rva; });
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					    next == chunks.begin(), "Instruction state is outside PE code");
+					current = &*std::prev(next);
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					    rva - current->rva >= current->size, "Instruction state is outside PE code");
+				}
+				if (current->bytes.empty())
+					current->bytes.resize(current->size);
+				return current->bytes[rva - current->rva];
+			}
+
+			std::vector<Chunk> chunks;
+			Chunk* current = nullptr;
+		};
 
 		class Decoder
 		{
@@ -181,34 +227,29 @@ namespace CppCoverage
 			return image.IsImportSlot(slot) && image.ImportTarget(slot, target);
 		}
 
-		struct DecodedInstruction
-		{
-			uint16_t size;
-			InstructionSet instructionSet;
-			bool endsBlock;
-		};
 	}
 
 	std::vector<BasicBlock> BasicBlockDiscovery::Discover(const PeImage& image) const
 	{
 		std::unique_ptr<Decoder> amd64;
 		std::unique_ptr<Decoder> arm64;
-		std::map<uint32_t, DecodedInstruction> decoded;
-		std::set<uint32_t> leaders;
+		DiscoveryState state{image};
+		size_t decodedCount = 0;
+		size_t leaderCount = 0;
 		std::deque<uint32_t> pending;
 		const auto enqueue = [&](uint32_t rva)
 		{
 			if (!image.GetCode(rva).data)
 				return;
-			auto next = decoded.upper_bound(rva);
-			if (next != decoded.begin())
+			auto& flags = state.At(rva);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+			    flags & InstructionInterior, "Control flow targets the middle of an instruction");
+			if (!(flags & BlockLeader))
 			{
-				const auto previous = std::prev(next);
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), rva - previous->first < previous->second.size && rva != previous->first, "Control flow targets the middle of an instruction");
-			}
-			if (leaders.insert(rva).second)
-			{
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), leaders.size() > MaxInstructions, "Basic-block discovery exceeds the instruction limit");
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				    leaderCount >= MaxInstructions, "Basic-block discovery exceeds the instruction limit");
+				flags |= BlockLeader;
+				++leaderCount;
 				pending.push_back(rva);
 			}
 		};
@@ -219,33 +260,41 @@ namespace CppCoverage
 		{
 			auto rva = pending.front();
 			pending.pop_front();
-			while (decoded.find(rva) == decoded.end())
+			if (state.At(rva) & InstructionSizeMask)
+				continue;
+			auto code = image.GetCode(rva);
+			while (code.data)
 			{
-				const auto code = image.GetCode(rva);
-				if (!code.data)
+				auto& flags = state.At(rva);
+				if (flags & InstructionSizeMask)
 					break;
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				    flags & InstructionInterior, "Control flow targets the middle of an instruction");
 				auto& decoder = code.instructionSet == InstructionSet::Amd64 ? amd64 : arm64;
 				if (!decoder)
 					decoder = std::make_unique<Decoder>(code.instructionSet);
 				const auto* instruction = decoder->Decode(code, rva);
-				if (!instruction || instruction->size > code.size ||
+				if (!instruction || instruction->size > InstructionSizeMask || instruction->size > code.size ||
 					(code.instructionSet == InstructionSet::Arm64 && instruction->size != 4))
 					break;
 				if (instruction->size > (std::numeric_limits<uint32_t>::max)() - rva)
 					break;
 				const auto nextRva = rva + instruction->size;
-				const auto nextDecoded = decoded.lower_bound(rva);
-				const auto nextLeader = leaders.upper_bound(rva);
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), (nextDecoded != decoded.end() && nextDecoded->first < nextRva) ||
-					(nextLeader != leaders.end() && *nextLeader < nextRva), "Overlapping instruction decodes");
+				for (uint32_t offset = 1; offset < instruction->size; ++offset)
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					    state.At(rva + offset) != 0, "Overlapping instruction decodes");
 
 				const bool call = Group(*instruction, CS_GRP_CALL);
 				const bool branch = Group(*instruction, CS_GRP_JUMP);
 				const bool stop = Terminates(*instruction, code.instructionSet);
 				const bool conditional = branch && Conditional(*instruction, code.instructionSet);
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), decoded.size() >= MaxInstructions, "Basic-block discovery exceeds the instruction limit");
-				decoded.emplace(rva, DecodedInstruction{instruction->size,
-					code.instructionSet, call || branch || stop});
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), decodedCount >= MaxInstructions, "Basic-block discovery exceeds the instruction limit");
+				flags = static_cast<uint8_t>(flags | instruction->size |
+				    (code.instructionSet == InstructionSet::Arm64 ? Arm64Instruction : 0) |
+				    (call || branch || stop ? EndsBlock : 0));
+				for (uint32_t offset = 1; offset < instruction->size; ++offset)
+					state.At(rva + offset) = InstructionInterior;
+				++decodedCount;
 				if (call || branch)
 				{
 					uint32_t target = 0;
@@ -259,30 +308,43 @@ namespace CppCoverage
 				}
 				if (stop)
 					break;
-				const auto nextCode = image.GetCode(nextRva);
-				if (!nextCode.data || nextCode.instructionSet != code.instructionSet)
-					break;
+				if (instruction->size == code.size)
+				{
+					const auto nextCode = image.GetCode(nextRva);
+					if (!nextCode.data || nextCode.instructionSet != code.instructionSet)
+						break;
+					code = nextCode;
+				}
+				else
+				{
+					code.data += instruction->size;
+					code.size -= instruction->size;
+				}
 				rva = nextRva;
 			}
 		}
 
 		std::vector<BasicBlock> blocks;
-		for (auto it = decoded.begin(); it != decoded.end();)
-		{
-			const auto first = it->first;
-			const auto instructionSet = it->second.instructionSet;
-			auto end = first;
-			for (;;)
+		blocks.reserve((std::min)(leaderCount, decodedCount));
+		bool previousEndsBlock = true;
+		for (const auto& chunk : state.chunks)
+			for (size_t offset = 0; offset < chunk.bytes.size(); ++offset)
 			{
-				end = it->first + it->second.size;
-				const auto endsBlock = it->second.endsBlock;
-				++it;
-				if (it == decoded.end() || endsBlock || it->first != end ||
-					it->second.instructionSet != instructionSet || leaders.count(it->first))
-					break;
+				const auto flags = chunk.bytes[offset];
+				const auto size = flags & InstructionSizeMask;
+				if (!size)
+					continue;
+				const auto rva = chunk.rva + static_cast<uint32_t>(offset);
+				const auto instructionSet = flags & Arm64Instruction ?
+				    InstructionSet::Arm64 : InstructionSet::Amd64;
+				if (!blocks.empty() && !previousEndsBlock && !(flags & BlockLeader) &&
+				    blocks.back().rva + blocks.back().size == rva &&
+				    blocks.back().instructionSet == instructionSet)
+					blocks.back().size += size;
+				else
+					blocks.push_back({rva, static_cast<uint32_t>(size), instructionSet});
+				previousEndsBlock = (flags & EndsBlock) != 0;
 			}
-			blocks.push_back({first, end - first, instructionSet});
-		}
 		return blocks;
 	}
 }

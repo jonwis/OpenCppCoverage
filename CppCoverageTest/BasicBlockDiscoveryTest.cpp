@@ -58,6 +58,18 @@ namespace CppCoverageTest
 					bytes.at(offset + i) = static_cast<uint8_t>(value >> (i * 8));
 			}
 
+			void ResizeText(uint32_t size, uint32_t rva = 0x1000)
+			{
+				bytes.resize(0x200 + size);
+				std::fill(bytes.begin() + 0x200, bytes.end(), uint8_t{0x90});
+				Put(0x86, 1, 2);
+				Put(0xa8, rva);
+				Put(0xd0, (uint64_t{rva} + size + 0xfff) & ~uint64_t{0xfff});
+				Put(0x190, size);
+				Put(0x194, rva);
+				Put(0x198, size);
+			}
+
 			size_t Offset(uint32_t rva) const
 			{
 				return rva < 0x2000 ? 0x200 + rva - 0x1000 : 0x600 + rva - 0x2000;
@@ -204,6 +216,39 @@ namespace CppCoverageTest
 		PeFixture fixture;
 		fixture.Code(0x1000, {0x90, 0x90, 0x75, 0xfd, 0xc3});
 		ExpectBlocks(fixture.Discover(), {{0x1000, 1}, {0x1001, 3}, {0x1004, 1}});
+	}
+
+	TEST(BasicBlockDiscoveryTest, Amd64InstructionsCrossChunksAndRejectInteriorTargets)
+	{
+		PeFixture fixture;
+		fixture.ResizeText(64 * 1024 + 6);
+		const size_t instruction = 0x200 + 64 * 1024 - 2;
+		fixture.Put(instruction, 0x00000000b8, 5);
+		fixture.Put(instruction + 5, 0xf975, 2);
+		fixture.Put(instruction + 7, 0xc3, 1);
+		ExpectBlocks(fixture.Discover(),
+		    {{0x1000, 64 * 1024 - 2}, {0x10ffe, 7}, {0x11005, 1}});
+		fixture.Put(instruction + 6, 0xfb, 1);
+		EXPECT_THROW(fixture.Discover(), wil::ResultException);
+	}
+
+	TEST(BasicBlockDiscoveryTest, Arm64LinearBlocksContinueAcrossChunks)
+	{
+		PeFixture fixture(0xaa64);
+		const uint32_t size = 64 * 1024 + 8;
+		fixture.ResizeText(size);
+		for (uint32_t offset = 0; offset < size - 4; offset += 4)
+			fixture.Put(0x200 + offset, 0xd503201f);
+		fixture.Put(0x200 + size - 4, 0xd65f03c0);
+		ExpectBlocks(fixture.Discover(), {{0x1000, size}}, InstructionSet::Arm64);
+	}
+
+	TEST(BasicBlockDiscoveryTest, SparseHighRvasDoNotRequireAnImageSizedWorkspace)
+	{
+		PeFixture fixture;
+		fixture.ResizeText(0x400, 0x70001000);
+		fixture.Put(0x200, 0xc3, 1);
+		ExpectBlocks(fixture.Discover(), {{0x70001000, 1}});
 	}
 
 	TEST(BasicBlockDiscoveryTest, InvalidDecodeKeepsOnlyCoveredInstructions)
