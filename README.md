@@ -124,6 +124,12 @@ execution flags. Source paths and line mappings are added during resolution.
 Collection accepts binary exports and module filters; apply source and line
 filters when resolving.
 
+With `--cover_children`, hits are a boolean union across matching images.
+Children and reloaded modules reuse discovery for the same image identity and
+loader function-override values. Blocks already covered are left uninstrumented;
+breakpoints in resident instances are retired at that process's next stopped
+debug event. Queued breakpoint exceptions remain recognized.
+
 On a machine with matching binaries and PDBs:
 
 ```powershell
@@ -188,3 +194,4 @@ CNG provider code in additional DLLs is outside the selected module set.
 `--verbose` logs per-module RVA preparation timings for image parsing, discovery,
 mapped-code validation, and breakpoint installation. Each phase reports wall time
 and collector-thread CPU time; CPU accounting has Windows scheduler granularity.
+Diagnostics also identify discovery-cache reuse and shared-hit retirement.

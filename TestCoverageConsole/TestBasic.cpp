@@ -45,6 +45,11 @@ namespace TestCoverageConsole
 			throw std::runtime_error("Invalid number of arguments.");
 		if (argv[1] != TestCoverageConsole::TestChildProcess)
 			throw std::runtime_error("Invalid argument.");
+		if (argc > 2 && std::wstring{argv[2]} == L"--rva-aggregate")
+		{
+			RunRvaAggregation(argc, argv);
+			return;
+		}
 
 		for (int i = 2; i < argc; ++i)
 		{

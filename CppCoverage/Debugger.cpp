@@ -112,6 +112,10 @@ namespace CppCoverage
 
 			auto continueStatus = boost::get_optional_value_or(processStatus.continueStatus_, DBG_CONTINUE);
 
+			const auto stopped = processHandles_.find(debugEvent.dwProcessId);
+			if (stopped != processHandles_.end())
+				debugEventsHandler.OnBeforeContinue(stopped->second.get());
+
 			THROW_IF_WIN32_BOOL_FALSE(ContinueDebugEvent(
 				debugEvent.dwProcessId, debugEvent.dwThreadId, continueStatus));
 		}

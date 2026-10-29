@@ -26,5 +26,6 @@ namespace CppCoverage
 		void OnLoadDll(HANDLE, HANDLE, const LOAD_DLL_DEBUG_INFO&) override;
 		void OnUnloadDll(HANDLE, HANDLE, const UNLOAD_DLL_DEBUG_INFO&) override;
 		ExceptionType OnException(HANDLE, HANDLE, const EXCEPTION_DEBUG_INFO&) override;
+		void OnBeforeContinue(HANDLE) override;
 	};
 }

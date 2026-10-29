@@ -198,7 +198,7 @@ namespace CppCoverage
 		}
 
 		void ValidateMappedInstructionSets(
-		    HANDLE process, const RemoteImage& image, const std::vector<BasicBlock>& blocks)
+		    HANDLE process, const RemoteImage& image, const std::vector<RvaBlock>& blocks)
 		{
 			std::vector<BasicBlock> ranges;
 			bool hybrid = false;
@@ -247,8 +247,9 @@ namespace CppCoverage
 					}
 				}
 			}
-			for (const auto& block : blocks)
+			for (const auto& entry : blocks)
 			{
+				const auto& block = entry.block;
 				if (ranges.empty())
 				{
 					const auto expected = image.file.Machine == 0x8664 ?
@@ -295,6 +296,14 @@ namespace CppCoverage
 			uint32_t size;
 			// Slots share the aggregate module's sorted block indices.
 			std::vector<Breakpoint> breakpoints;
+			size_t observedHits = 0;
+		};
+
+		struct Aggregate
+		{
+			std::vector<std::vector<std::pair<uint32_t, uint32_t>>> overrideViews;
+			std::vector<uint32_t> hits;
+			size_t liveInstances = 0;
 		};
 
 		struct Process
@@ -310,6 +319,7 @@ namespace CppCoverage
 			std::map<uint64_t, Module> modules;
 			std::map<uint64_t, Loader> loaders;
 			bool startupBreakpointHandled = false;
+			size_t observedEpoch = 0;
 
 		};
 
@@ -317,6 +327,24 @@ namespace CppCoverage
 		std::unique_ptr<CoverageFilterManager> filter;
 		ExceptionHandler exceptions;
 		std::map<DWORD, std::unique_ptr<Process>> processes;
+		std::vector<Aggregate> aggregates;
+		size_t hitEpoch = 0;
+
+		void RecordHit(size_t aggregate, size_t index)
+		{
+			auto& block = coverage.modules[aggregate].blocks[index];
+			if (!block.executed)
+			{
+				block.executed = true;
+				auto& shared = aggregates[aggregate];
+				// Later loads skip executed blocks; only resident peers need retirement.
+				if (shared.liveInstances > 1)
+				{
+					shared.hits.push_back(static_cast<uint32_t>(index));
+					++hitEpoch;
+				}
+			}
+		}
 
 		void Terminate() noexcept
 		{
@@ -382,6 +410,8 @@ namespace CppCoverage
 	    HANDLE process, HANDLE, const EXIT_PROCESS_DEBUG_INFO&)
 	{
 		state_->exceptions.OnExitProcess(process);
+		for (const auto& module : state_->processes.at(ProcessId(process))->modules)
+			--state_->aggregates[module.second.aggregate].liveInstances;
 		state_->processes.erase(ProcessId(process));
 	}
 
@@ -396,7 +426,12 @@ namespace CppCoverage
 	{
 		auto& live = *state_->processes.at(ProcessId(process));
 		const auto base = reinterpret_cast<uint64_t>(info.lpBaseOfDll);
-		live.modules.erase(base);
+		const auto module = live.modules.find(base);
+		if (module != live.modules.end())
+		{
+			--state_->aggregates[module->second.aggregate].liveInstances;
+			live.modules.erase(module);
+		}
 		live.loaders.erase(base);
 	}
 
@@ -429,16 +464,54 @@ namespace CppCoverage
 		    remote.optional.SizeOfImage != identity.sizeOfImage ||
 		    remote.optional.CheckSum != identity.checksum,
 			"Loaded module does not match its on-disk PE identity: %ls", path.c_str());
+		std::vector<std::pair<uint32_t, uint32_t>> overrides;
 		for (const auto rva : image.FunctionOverrideRelocations())
-			image.ApplyFunctionOverrideRelocation(
-				rva, Read<uint32_t>(process, RemoteAddress(remote, rva, 4)));
-		const PhaseClock parsed;
-		auto blocks = BasicBlockDiscovery{}.Discover(image);
-		std::sort(blocks.begin(), blocks.end(), [](const BasicBlock& lhs, const BasicBlock& rhs)
 		{
-			return lhs.rva < rhs.rva;
-		});
-		blocks.erase(std::unique(blocks.begin(), blocks.end(), SameBlock), blocks.end());
+			const auto value = Read<uint32_t>(process, RemoteAddress(remote, rva, 4));
+			image.ApplyFunctionOverrideRelocation(rva, value);
+			overrides.emplace_back(rva, value);
+		}
+		const PhaseClock parsed;
+		size_t aggregate = 0;
+		auto& modules = state_->coverage.modules;
+		for (; aggregate < modules.size(); ++aggregate)
+			if (SameIdentity(modules[aggregate].identity, identity))
+				break;
+		const bool cacheHit = aggregate < modules.size() &&
+		    std::find(state_->aggregates[aggregate].overrideViews.begin(),
+		              state_->aggregates[aggregate].overrideViews.end(), overrides) !=
+		        state_->aggregates[aggregate].overrideViews.end();
+		if (!cacheHit)
+		{
+			auto discoveredBlocks = BasicBlockDiscovery{}.Discover(image);
+			std::sort(discoveredBlocks.begin(), discoveredBlocks.end(),
+			    [](const BasicBlock& lhs, const BasicBlock& rhs) { return lhs.rva < rhs.rva; });
+			discoveredBlocks.erase(
+			    std::unique(discoveredBlocks.begin(), discoveredBlocks.end(), SameBlock),
+			    discoveredBlocks.end());
+			if (aggregate == modules.size())
+			{
+				RvaModule module;
+				module.path = path;
+				module.identity = identity;
+				module.blocks.reserve(discoveredBlocks.size());
+				for (const auto& block : discoveredBlocks)
+					module.blocks.push_back({block, false});
+				modules.push_back(std::move(module));
+				state_->aggregates.emplace_back();
+			}
+			else
+			{
+				const auto& previous = modules[aggregate].blocks;
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+				    previous.size() != discoveredBlocks.size(), "Identical PE identities have different block layouts");
+				for (size_t i = 0; i < discoveredBlocks.size(); ++i)
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+					    !SameBlock(previous[i].block, discoveredBlocks[i]), "Identical PE identities have different block layouts");
+			}
+			state_->aggregates[aggregate].overrideViews.push_back(std::move(overrides));
+		}
+		const auto& blocks = modules[aggregate].blocks;
 		const PhaseClock discovered;
 		try
 		{
@@ -455,7 +528,7 @@ namespace CppCoverage
 		uint64_t mappedAddress = 0;
 		for (size_t i = 0; i < blocks.size(); ++i)
 		{
-			const auto& block = blocks[i];
+			const auto& block = blocks[i].block;
 			const auto patch = ArchitectureBreakpoint::Encoding(block.instructionSet);
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), block.size < patch.size || block.rva < end ||
 			    uint64_t{block.rva} + block.size > identity.sizeOfImage ||
@@ -493,31 +566,11 @@ namespace CppCoverage
 			    ? State::Breakpoint::Status::ApplicationTrap : State::Breakpoint::Status::Installed;
 		}
 		const PhaseClock validated;
-		size_t aggregate = 0;
-		auto& modules = state_->coverage.modules;
-		for (; aggregate < modules.size(); ++aggregate)
-			if (SameIdentity(modules[aggregate].identity, identity))
-				break;
-		if (aggregate == modules.size())
-		{
-			RvaModule module;
-			module.path = path;
-			module.identity = identity;
-			module.blocks.reserve(blocks.size());
-			for (const auto& block : blocks)
-				module.blocks.push_back({block, false});
-			modules.push_back(std::move(module));
-		}
-		else
-		{
-			const auto& previous = modules[aggregate].blocks;
-			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), previous.size() != blocks.size(), "Identical PE identities have different block layouts");
-			for (size_t i = 0; i < blocks.size(); ++i)
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !SameBlock(previous[i].block, blocks[i]), "Identical PE identities have different block layouts");
-		}
 		auto inserted = live.modules.emplace(
-		    base, State::Module{aggregate, identity.sizeOfImage, std::move(breakpoints)});
+		    base, State::Module{aggregate, identity.sizeOfImage, std::move(breakpoints),
+		        state_->aggregates[aggregate].hits.size()});
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !inserted.second, "A module was reloaded without an unload notification");
+		++state_->aggregates[aggregate].liveInstances;
 		auto& installed = inserted.first->second.breakpoints;
 		for (size_t i = 0; i < blocks.size(); ++i)
 			if (modules[aggregate].blocks[i].executed)
@@ -532,11 +585,11 @@ namespace CppCoverage
 				++i;
 				continue;
 			}
-			mappedAddress = ReadCodeRange(process, remote, base + blocks[i].rva, mapped);
+			mappedAddress = ReadCodeRange(process, remote, base + blocks[i].block.rva, mapped);
 			rangePatches.clear();
 			const auto last = std::lower_bound(
 			    blocks.begin() + i, blocks.end(), mappedAddress + mapped.size() - base,
-			    [](const BasicBlock& block, uint64_t value) { return block.rva < value; });
+			    [](const RvaBlock& block, uint64_t value) { return block.block.rva < value; });
 			const auto lastIndex = static_cast<size_t>(last - blocks.begin());
 			rangePatches.reserve(lastIndex - i);
 			for (; i < lastIndex; ++i)
@@ -544,9 +597,9 @@ namespace CppCoverage
 				if (installed[i].status != State::Breakpoint::Status::Installed)
 					continue;
 				ArchitectureBreakpoint::Instruction original{
-				    installed[i].original, ArchitectureBreakpoint::Encoding(blocks[i].instructionSet).size};
-				rangePatches.emplace_back(process, base + blocks[i].rva,
-				                          blocks[i].instructionSet, original);
+				    installed[i].original, ArchitectureBreakpoint::Encoding(blocks[i].block.instructionSet).size};
+				rangePatches.emplace_back(process, base + blocks[i].block.rva,
+				                          blocks[i].block.instructionSet, original);
 				++installedCount;
 			}
 			patches.clear();
@@ -559,6 +612,7 @@ namespace CppCoverage
 		LOG_DEBUG << "RVA preparation pid=" << ProcessId(process)
 		          << " module=" << path.filename().wstring()
 		          << " blocks=" << blocks.size() << " installed=" << installedCount
+		          << " discovery_cached=" << cacheHit
 		          << " parse_wall_ms=" << parsed.WallMillisecondsSince(started)
 		          << " parse_cpu_ms=" << parsed.CpuMillisecondsSince(started)
 		          << " discovery_wall_ms=" << discovered.WallMillisecondsSince(parsed)
@@ -608,11 +662,13 @@ namespace CppCoverage
 							else
 								patch.VerifyRestored();
 							patch.ResumeThread(thread);
-							hit->executed = true;
+							state_->RecordHit(module->second.aggregate,
+							    static_cast<size_t>(hit - blocks.begin()));
 							return ExceptionType::BreakPoint;
 						}
 						if (site.status == State::Breakpoint::Status::ApplicationTrap)
-							hit->executed = true;
+							state_->RecordHit(module->second.aggregate,
+							    static_cast<size_t>(hit - blocks.begin()));
 					}
 				}
 			}
@@ -660,5 +716,40 @@ namespace CppCoverage
 				return ExceptionType::Error;
 			default: return ExceptionType::NotHandled;
 		}
+	}
+
+	void RvaCoverageRunner::OnBeforeContinue(HANDLE process)
+	{
+		if (!state_->hitEpoch)
+			return;
+		auto& live = *state_->processes.at(ProcessId(process));
+		if (live.observedEpoch == state_->hitEpoch)
+			return;
+		for (auto& entry : live.modules)
+		{
+			auto& module = entry.second;
+			const auto& hits = state_->aggregates[module.aggregate].hits;
+			const auto& blocks = state_->coverage.modules[module.aggregate].blocks;
+			size_t restored = 0;
+			for (; module.observedHits < hits.size(); ++module.observedHits)
+			{
+				const auto index = hits[module.observedHits];
+				auto& site = module.breakpoints[index];
+				if (site.status != State::Breakpoint::Status::Installed)
+					continue;
+				const auto& block = blocks[index].block;
+				ArchitectureBreakpoint::Instruction original{
+				    site.original, ArchitectureBreakpoint::Encoding(block.instructionSet).size};
+				ArchitectureBreakpoint{process, entry.first + block.rva,
+				    block.instructionSet, original}.Restore();
+				site.status = State::Breakpoint::Status::Restored;
+				++restored;
+			}
+			if (restored)
+				LOG_DEBUG << "RVA shared hits pid=" << ProcessId(process)
+				          << " module=" << state_->coverage.modules[module.aggregate].path.filename().wstring()
+				          << " restored=" << restored;
+		}
+		live.observedEpoch = state_->hitEpoch;
 	}
 }

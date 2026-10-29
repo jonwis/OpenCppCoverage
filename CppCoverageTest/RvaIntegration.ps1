@@ -78,6 +78,40 @@ finally {
 }
 
 if ($ConsoleFixture) {
+    foreach ($mode in 'before-load', 'resident') {
+        $aggregateRaw = Join-Path $OutputDirectory "aggregate-$mode.cov"
+        $aggregateXml = Join-Path $OutputDirectory "aggregate-$mode.xml"
+        $aggregateLog = Join-Path $OutputDirectory "aggregate-$mode.log"
+        $consolePdb = [IO.Path]::ChangeExtension($ConsoleFixture, '.pdb')
+        $hiddenConsolePdb = "$consolePdb.hidden"
+        Move-Item -LiteralPath $consolePdb -Destination $hiddenConsolePdb
+        try {
+            & $Tool --verbose --symbol-free --cover_children --modules (Split-Path -Leaf $ConsoleFixture) `
+                --export_type "binary:$aggregateRaw" -- $ConsoleFixture ChildProcess --rva-aggregate $mode *> $aggregateLog
+            if ($LASTEXITCODE -ne 0) { throw "Parent/child aggregation failed: $mode (see $aggregateLog)" }
+        }
+        finally {
+            Move-Item -LiteralPath $hiddenConsolePdb -Destination $consolePdb
+        }
+        $diagnostics = Get-Content -LiteralPath $aggregateLog -Raw
+        if ($diagnostics -notmatch 'discovery_cached=true') {
+            throw 'The child did not reuse session discovery.'
+        }
+        if ($mode -eq 'resident' -and $diagnostics -notmatch 'RVA shared hits .* restored=[1-9]') {
+            throw 'No resident child breakpoint was retired.'
+        }
+        & $Tool --resolve $aggregateRaw --sources '*RvaAggregation.cpp' --export_type "cobertura:$aggregateXml"
+        if ($LASTEXITCODE -ne 0) { throw 'Parent/child aggregation did not resolve.' }
+        [xml]$aggregateReport = Get-Content -LiteralPath $aggregateXml -Raw
+        $aggregateSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\TestCoverageConsole\RvaAggregation.cpp')
+        foreach ($statement in 'return 123;', 'return 456;') {
+            $line = ($aggregateSource | Select-String -SimpleMatch $statement).LineNumber
+            if (!$aggregateReport.SelectNodes("//class[contains(@filename,'RvaAggregation.cpp')]/lines/line[@number='$line' and @hits='1']").Count) {
+                throw "The parent/child union did not cover: $statement"
+            }
+        }
+    }
+
     $consoleSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\TestCoverageConsole\TestCoverageConsole.cpp')
     foreach ($coverChildren in $false, $true) {
         $childRaw = Join-Path $OutputDirectory "children-$coverChildren.cov"
