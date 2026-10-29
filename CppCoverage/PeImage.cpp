@@ -212,6 +212,28 @@ namespace CppCoverage
 			std::memcmp(code.data + position, bytes + position, size - position) == 0;
 	}
 
+	std::vector<uint32_t> PeImage::FunctionOverrideRelocations() const
+	{
+		std::vector<uint32_t> result;
+		result.reserve(functionOverrides_.size());
+		for (const auto& entry : functionOverrides_)
+			result.push_back(entry.first);
+		return result;
+	}
+
+	void PeImage::ApplyFunctionOverrideRelocation(uint32_t rva, uint32_t value)
+	{
+		const auto entry = functionOverrides_.find(rva);
+		THROW_HR_IF_MSG(E_INVALIDARG, entry == functionOverrides_.end(),
+			"Code location has no declared function override relocation");
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+			entry->second == 2 && ((Rva32(rva) ^ value) & 0xfc000000),
+			"Function override changed the ARM64 branch opcode");
+		const auto offset = RawOffset(rva, 4);
+		for (size_t i = 0; i < 4; ++i)
+			bytes_[offset + i] = static_cast<uint8_t>(value >> (i * 8));
+	}
+
 	PeCodeView PeImage::GetCode(uint32_t rva) const
 	{
 		auto range = std::upper_bound(codeRanges_.begin(), codeRanges_.end(), rva,
@@ -329,6 +351,7 @@ namespace CppCoverage
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), !(hybrid_ || (identity_.machine != Arm64EC && identity_.machine != Arm64X)), "ARM64EC/ARM64X requires valid CHPE metadata");
 		ParseImports();
 		ParseRelocations();
+		ParseFunctionOverrides(table);
 		ParseExports();
 		ParseTls();
 		const auto& exception = directories_[3];
@@ -749,6 +772,148 @@ namespace CppCoverage
 			std::copy_n(bytes_.begin() + raw + 4, 16, identity_.pdbGuid.begin());
 			identity_.pdbAge = static_cast<uint32_t>(Read(bytes_, raw + 20, 4));
 			return;
+		}
+	}
+
+	void PeImage::ParseFunctionOverrides(size_t sectionTable)
+	{
+		const auto& config = directories_[10];
+		if (!config.size)
+			return;
+		const auto configSize = Rva32(config.rva);
+		uint32_t table = 0;
+		if (configSize >= 200)
+		{
+			const auto pointer = Rva64(config.rva, 192);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				pointer && !VaToRva(pointer, table), "Invalid dynamic relocation table pointer");
+		}
+		if (!table && configSize >= 232)
+		{
+			const auto section = Read(bytes_, RawOffset(Add(config.rva, 228), 2), 2);
+			if (section)
+			{
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					section > sections_.size(), "Invalid dynamic relocation section");
+				const auto header = sectionTable + static_cast<size_t>(section - 1) * 40;
+				const auto offset = Rva32(config.rva, 224);
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					!Fits(offset, 8, static_cast<size_t>(Read(bytes_, header + 16, 4))),
+					"Dynamic relocation table exceeds its section");
+				table = Add(static_cast<uint32_t>(Read(bytes_, header + 12, 4)), offset);
+			}
+		}
+		if (!table)
+			return;
+		RawOffset(table, 8);
+		const auto version = Rva32(table);
+		const auto tableSize = Rva32(table, 4);
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+			(version != 1 && version != 2) ||
+			!Fits(8, tableSize, Available(table)), "Invalid dynamic relocation table");
+		for (size_t offset = 8; offset < size_t{tableSize} + 8;)
+		{
+			Charge(1);
+			const auto remaining = size_t{tableSize} + 8 - offset;
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				remaining < (version == 1 ? 12u : 24u), "Truncated dynamic relocation header");
+			const auto headerSize = version == 1 ? 12u : Rva32(table, offset);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				headerSize < (version == 1 ? 12u : 24u) || headerSize > remaining,
+				"Truncated dynamic relocation header");
+			const auto symbol = Rva64(table, offset + (version == 1 ? 0 : 8));
+			const auto payloadSize = Rva32(table, offset + (version == 1 ? 8 : 4));
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				payloadSize > remaining - headerSize, "Truncated dynamic relocation payload");
+			const auto payload = Add(table, offset + headerSize);
+			offset += headerSize + size_t{payloadSize};
+			if (symbol != 7)
+				continue;
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				payloadSize < 4, "Truncated function override header");
+			const auto entriesSize = Rva32(payload);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				entriesSize > payloadSize - 4, "Invalid function override extent");
+			const auto bdd = Add(payload, 4 + size_t{entriesSize});
+			const auto bddSize = payloadSize - 4 - entriesSize;
+			for (size_t entry = 4; entry < size_t{entriesSize} + 4;)
+			{
+				Charge(1);
+				const auto remainingEntry = size_t{entriesSize} + 4 - entry;
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					remainingEntry < 16, "Truncated function override record");
+				const auto original = Rva32(payload, entry);
+				const auto bddOffset = Rva32(payload, entry + 4);
+				const auto rvaSize = Rva32(payload, entry + 8);
+				const auto relocSize = Rva32(payload, entry + 12);
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					original >= identity_.sizeOfImage || (rvaSize & 3) ||
+					!Fits(16, rvaSize, remainingEntry) ||
+					relocSize > remainingEntry - 16 - rvaSize ||
+					!Fits(bddOffset, 8, bddSize), "Invalid function override record");
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+					Rva32(bdd, bddOffset) != 1 ||
+					(Rva32(bdd, bddOffset + 4) & 7) ||
+					!Fits(size_t{bddOffset} + 8, Rva32(bdd, bddOffset + 4), bddSize),
+					"Invalid function override decision data");
+				AddRoot(original);
+				Charge(rvaSize / 4);
+				for (size_t i = 0; i < rvaSize; i += 4)
+				{
+					const auto target = Rva32(payload, entry + 16 + i);
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+						target >= identity_.sizeOfImage, "Invalid overriding function RVA");
+					AddRoot(target);
+				}
+				const auto relocs = Add(payload, entry + 16 + rvaSize);
+				entry += 16 + size_t{rvaSize} + relocSize;
+				for (size_t block = 0; block < relocSize;)
+				{
+					Charge(1);
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+						!Fits(block, 8, relocSize), "Truncated function override relocation block");
+					const auto page = Rva32(relocs, block);
+					const auto size = Rva32(relocs, block + 4);
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+						(page & 0xfff) || page >= identity_.sizeOfImage ||
+						size < 8 || (size & 1) || !Fits(block, size, relocSize),
+						"Invalid function override relocation block");
+					for (size_t i = 8; i < size; i += 2)
+					{
+						Charge(1);
+						const auto encoded = Read(bytes_, RawOffset(Add(relocs, block + i), 2), 2);
+						const auto type = static_cast<uint16_t>(encoded >> 12);
+						if (!type)
+							continue;
+						const auto target = Add(page, encoded & 0xfff);
+						RawOffset(target, 4);
+						const auto code = GetCode(target);
+						if (!code.data)
+							continue;
+						THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+							code.size < 4 || (type != 1 && type != 2) ||
+							(type == 1 && code.instructionSet != InstructionSet::Amd64) ||
+							(type == 2 && (code.instructionSet != InstructionSet::Arm64 ||
+								(Rva32(target) & 0x7c000000) != 0x14000000)),
+							"Unsupported function override code relocation");
+						THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+							!functionOverrides_.emplace(target, type).second,
+							"Duplicate function override code relocation");
+					}
+					block += size;
+				}
+			}
+		}
+		uint64_t end = 0;
+		for (const auto& entry : functionOverrides_)
+		{
+			const auto next = std::lower_bound(relocations_.begin(), relocations_.end(), entry.first);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+				entry.first < end ||
+				(next != relocations_.end() && *next < uint64_t{entry.first} + 4) ||
+				(next != relocations_.begin() && entry.first - *std::prev(next) < 8),
+				"Overlapping function override code relocations");
+			end = uint64_t{entry.first} + 4;
 		}
 	}
 

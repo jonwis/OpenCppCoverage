@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <vector>
 
 namespace CppCoverage
@@ -56,7 +57,9 @@ namespace CppCoverage
 		bool VaToRva(uint64_t va, uint32_t& rva) const;
 		bool IsImportSlot(uint32_t rva) const;
 		bool ImportTarget(uint32_t slotRva, uint32_t& targetRva) const;
-		// Compares raw code after DIR64 base relocation; ARM64X dynamic fixups remain differences.
+		std::vector<uint32_t> FunctionOverrideRelocations() const;
+		void ApplyFunctionOverrideRelocation(uint32_t rva, uint32_t value);
+		// Compares code after declared function overrides and DIR64 base relocation.
 		bool MatchesMappedCode(uint32_t rva, const uint8_t* bytes, size_t size,
 			uint64_t mappedBase) const;
 
@@ -88,6 +91,7 @@ namespace CppCoverage
 		void ParseLoadConfig();
 		void ParseDebug();
 		void ParseRelocations();
+		void ParseFunctionOverrides(size_t sectionTable);
 		void ParseRuntimeFunctions(uint32_t rva, uint32_t size, bool arm64);
 		void AddRoot(uint32_t rva);
 		void Charge(size_t count);
@@ -109,6 +113,7 @@ namespace CppCoverage
 		std::vector<uint32_t> roots_;
 		std::vector<ImportSlot> imports_;
 		std::vector<uint32_t> relocations_;
+		std::map<uint32_t, uint16_t> functionOverrides_;
 		size_t metadataEntries_ = 0;
 	};
 }

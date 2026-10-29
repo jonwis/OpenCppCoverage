@@ -125,6 +125,45 @@ namespace CppCoverageTest
 				Rva(0x2544, 5);
 			}
 
+			void FunctionOverride(uint16_t type = 2,
+				bool sectionRelative = false, bool version2 = false)
+			{
+				Directory(10, 0x2100, 232);
+				Rva(0x2100, 232);
+				if (sectionRelative)
+				{
+					Rva(0x21e0, 0x300);
+					Rva(0x21e4, 2, 2);
+				}
+				else
+					Rva(0x21c0, Base + 0x2300, 8);
+				const uint32_t headerSize = version2 ? 24 : 12;
+				Rva(0x2300, version2 ? 2 : 1);
+				Rva(0x2304, headerSize + 52);
+				if (version2)
+				{
+					Rva(0x2308, headerSize);
+					Rva(0x230c, 52);
+					Rva(0x2310, 7, 8);
+				}
+				else
+				{
+					Rva(0x2308, 7, 8);
+					Rva(0x2310, 52);
+				}
+				const auto payload = 0x2308 + headerSize;
+				Rva(payload, 32);
+				Rva(payload + 4, 0x1040);
+				Rva(payload + 12, 4);
+				Rva(payload + 16, 12);
+				Rva(payload + 20, 0x1060);
+				Rva(payload + 24, 0x1000);
+				Rva(payload + 28, 12);
+				Rva(payload + 32, (type << 12) | (type == 1 ? 1 : 0), 2);
+				Rva(payload + 36, 1);
+				Rva(payload + 40, 8);
+			}
+
 			std::vector<BasicBlock> Discover() const
 			{
 				return BasicBlockDiscovery().Discover(PeImage(bytes));
@@ -526,6 +565,72 @@ namespace CppCoverageTest
 		live[0] ^= 1;
 		EXPECT_FALSE(image.MatchesMappedCode(0x1000, live.data(), live.size(), relocatedBase));
 		fixture.Rva(0x2108, 0x3002, 2);
+		EXPECT_THROW(PeImage(fixture.bytes), wil::ResultException);
+	}
+
+	TEST(BasicBlockDiscoveryTest, Arm64FunctionOverridesUseMappedBranchesAndPreserveIdentity)
+	{
+		PeFixture fixture(0xaa64);
+		fixture.FunctionOverride();
+		fixture.Rva(0x1000, 0x14000010);
+		for (const auto rva : {0x1004u, 0x1040u, 0x1060u, 0x1080u})
+			fixture.Rva(rva, 0xd65f03c0);
+		PeImage image(fixture.bytes);
+		const auto identity = image.Identity();
+		EXPECT_EQ(std::vector<uint32_t>{0x1000}, image.FunctionOverrideRelocations());
+		const auto code = image.GetCode(0x1000);
+		std::vector<uint8_t> live(code.data, code.data + 8);
+		live[0] = 0x20;
+		EXPECT_FALSE(image.MatchesMappedCode(0x1000, live.data(), live.size(), PeFixture::Base));
+		image.ApplyFunctionOverrideRelocation(0x1000, 0x14000020);
+		EXPECT_EQ(identity.imageHash, image.Identity().imageHash);
+		EXPECT_TRUE(image.MatchesMappedCode(0x1000, live.data(), live.size(), PeFixture::Base));
+		ExpectBlocks(BasicBlockDiscovery{}.Discover(image),
+			{{0x1000, 4}, {0x1040, 4}, {0x1060, 4}, {0x1080, 4}}, InstructionSet::Arm64);
+		EXPECT_THROW(image.ApplyFunctionOverrideRelocation(0x1000, 0x94000020), wil::ResultException);
+		EXPECT_THROW(image.ApplyFunctionOverrideRelocation(0x1004, 0x14000020), wil::ResultException);
+		live[4] ^= 1;
+		EXPECT_FALSE(image.MatchesMappedCode(0x1000, live.data(), live.size(), PeFixture::Base));
+	}
+
+	TEST(BasicBlockDiscoveryTest, Amd64FunctionOverridesSupportVersion2AndSectionRelativeTables)
+	{
+		PeFixture fixture;
+		fixture.FunctionOverride(1, true, true);
+		fixture.Code(0x1000, {0xe9, 0x3b, 0, 0, 0});
+		for (const auto rva : {0x1040u, 0x1060u, 0x1080u})
+			fixture.Code(rva, {0xc3});
+		PeImage image(fixture.bytes);
+		EXPECT_EQ(std::vector<uint32_t>{0x1001}, image.FunctionOverrideRelocations());
+		image.ApplyFunctionOverrideRelocation(0x1001, 0x7b);
+		ExpectBlocks(BasicBlockDiscovery{}.Discover(image),
+			{{0x1000, 5}, {0x1040, 1}, {0x1060, 1}, {0x1080, 1}});
+		const auto code = image.GetCode(0x1000);
+		std::vector<uint8_t> live(code.data, code.data + 5);
+		EXPECT_TRUE(image.MatchesMappedCode(0x1000, live.data(), live.size(), PeFixture::Base));
+		live[0] = 0xe8;
+		EXPECT_FALSE(image.MatchesMappedCode(0x1000, live.data(), live.size(), PeFixture::Base));
+	}
+
+	TEST(BasicBlockDiscoveryTest, MalformedAndOverlappingFunctionOverridesFailClosed)
+	{
+		PeFixture fixture(0xaa64);
+		fixture.FunctionOverride();
+		fixture.Rva(0x1000, 0x14000010);
+		for (const auto& change : {
+			std::pair<uint32_t, uint32_t>{0x2300, 3}, {0x2304, 63},
+			{0x2314, 31}, {0x2318, 0x3000}, {0x231c, 0x100000},
+			{0x2320, 6}, {0x2330, 0}, {0x2334, 0x3000},
+			{0x2334, 0x20002000}, {0x2338, 2}, {0x233c, 16}})
+		{
+			auto bad = fixture;
+			bad.Rva(change.first, change.second);
+			EXPECT_THROW(PeImage(bad.bytes), wil::ResultException) << std::hex << change.first;
+		}
+		fixture.Directory(5, 0x2500, 12);
+		fixture.Rva(0x2500, 0x1000);
+		fixture.Rva(0x2504, 12);
+		fixture.Rva(0x2508, 0xa000, 2);
 		EXPECT_THROW(PeImage(fixture.bytes), wil::ResultException);
 	}
 

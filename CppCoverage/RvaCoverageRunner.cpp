@@ -371,6 +371,9 @@ namespace CppCoverage
 		    remote.optional.SizeOfImage != identity.sizeOfImage ||
 		    remote.optional.CheckSum != identity.checksum,
 			"Loaded module does not match its on-disk PE identity: %ls", path.c_str());
+		for (const auto rva : image.FunctionOverrideRelocations())
+			image.ApplyFunctionOverrideRelocation(
+				rva, Read<uint32_t>(process, RemoteAddress(remote, rva, 4)));
 		auto blocks = BasicBlockDiscovery{}.Discover(image);
 		std::sort(blocks.begin(), blocks.end(), [](const BasicBlock& lhs, const BasicBlock& rhs)
 		{
