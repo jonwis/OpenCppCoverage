@@ -146,3 +146,41 @@ code contributes to the resolved line-coverage denominator.
 Collection rejects mapped code that differs from its
 image after ordinary ASLR relocations. ARM64X dynamic relocations and runtime
 code modification are unsupported.
+
+### Runtime performance harness
+
+`PerformanceTests\DirectoryHash.cpp` recursively enumerates a directory and hashes
+each file with BCrypt SHA-256 through SHCore file streams. Each pass reports wall
+time, application CPU time, file and byte counts, and a combined digest. The
+combined digest is SHA-256 of the concatenated 32-byte file hashes, ordered by
+ordinal full path. Reparse points are skipped; read errors fail the run.
+
+Build the Release collector and workload for the target architecture:
+
+```powershell
+msbuild .\CppCoverage.sln /m /t:OpenCppCoverage,DirectoryHash /p:Configuration=Release /p:Platform=ARM64
+pwsh -File .\PerformanceTests\Test-DirectoryHash.ps1 -App .\ARM64\Release\DirectoryHash.exe -OutputDirectory .\out\hash-check
+pwsh -File .\PerformanceTests\Measure-DirectoryHash.ps1 -Tool .\ARM64\Release\OpenCppCoverage.exe -App .\ARM64\Release\DirectoryHash.exe -OutputDirectory .\out\hash-performance
+```
+
+The PowerShell 7 runner generates a deterministic **128 MiB / 256-file** directory
+in the new output directory. It verifies hashes independently with .NET and warms
+the filesystem cache before timing. Two counterbalanced pairs run collector then
+baseline, followed by baseline then collector, with 33 directory passes per
+process. `-DataMiB`, `-Passes`, and `-Pairs` adjust those defaults.
+
+Collection selects KernelBase, SHCore, BCrypt, and the workload EXE. The workload
+copy has no adjacent PDB; symbol paths are cleared and collection is symbol-free.
+Both modes run without WPR. Every pass must match the independent digest, counts,
+and byte total; raw captures must contain executed blocks for all four modules
+and matching image hashes.
+
+`measurements.json` retains per-pass data, binary identities and raw module
+counts; `summary.json` reports mode averages. Startup covers process creation
+through the start of work. First-pass time includes initial runtime breakpoint
+hits; later passes measure warmed execution. End-to-end time includes launch,
+all passes, shutdown, and coverage serialization. Application CPU excludes
+collector CPU; `launchedProcessCpuSeconds` is collector CPU in collected runs and
+application CPU in baseline runs. These are warm-cache, single-threaded workload
+measurements, with the selected module set determining the coverage overhead.
+CNG provider code in additional DLLs is outside the selected module set.
