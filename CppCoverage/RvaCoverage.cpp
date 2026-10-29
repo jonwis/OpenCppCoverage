@@ -70,7 +70,6 @@ namespace CppCoverage
 				const auto& block = entry.block;
 				const auto instructionSet = static_cast<uint16_t>(block.instructionSet);
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), (instructionSet != 0x8664 && instructionSet != 0xaa64) ||
-				    (module.identity.machine == 0xaa64 && instructionSet != 0xaa64) ||
 				    block.size == 0 || block.rva < end ||
 				    uint64_t{block.rva} + block.size > module.identity.sizeOfImage ||
 				    (instructionSet == 0xaa64 &&

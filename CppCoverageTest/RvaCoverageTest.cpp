@@ -161,6 +161,29 @@ namespace CppCoverageTest
 		EXPECT_EQ(0, result.exitCode);
 	}
 
+	TEST_F(RvaCoverageTest, Arm64HybridHeadersPreserveMixedInstructionSets)
+	{
+		for (const uint16_t machine : {uint16_t{0xaa64}, uint16_t{0xa641}})
+		{
+			auto sample = Sample();
+			sample.modules[0].identity.machine = machine;
+			cov::WriteRvaCoverage(sample, path_);
+			const auto result = cov::ReadRvaCoverage(path_);
+			ASSERT_EQ(1u, result.modules.size());
+			EXPECT_EQ(machine, result.modules[0].identity.machine);
+			ASSERT_EQ(2u, result.modules[0].blocks.size());
+			for (size_t i = 0; i < 2; ++i)
+			{
+				const auto& expected = sample.modules[0].blocks[i];
+				const auto& actual = result.modules[0].blocks[i];
+				EXPECT_EQ(expected.block.instructionSet, actual.block.instructionSet);
+				EXPECT_EQ(expected.block.rva, actual.block.rva);
+				EXPECT_EQ(expected.block.size, actual.block.size);
+				EXPECT_EQ(expected.executed, actual.executed);
+			}
+		}
+	}
+
 	TEST_F(RvaCoverageTest, ExtendedWindowsModulePathRoundTrip)
 	{
 		auto sample = Sample();
@@ -247,7 +270,7 @@ namespace CppCoverageTest
 		sample.modules[0].blocks[1].block.size = 3;
 		EXPECT_THROW(cov::WriteRvaCoverage(sample, path_), wil::ResultException);
 		sample = Sample();
-		sample.modules[0].identity.machine = 0xaa64;
+		sample.modules[0].identity.machine = 0x14c;
 		EXPECT_THROW(cov::WriteRvaCoverage(sample, path_), wil::ResultException);
 		sample = Sample();
 		sample.modules[0].path = L"bad?.dll";
