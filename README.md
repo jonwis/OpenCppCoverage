@@ -90,6 +90,11 @@ No machine-wide vcpkg integration is required.
 NuGet restores the pinned C++/CLI test dependencies to the repository's `packages`
 directory using the configured package sources.
 
+Microsoft DIA redistribution terms are identified in
+`CppCoverage\Dia\DIA-NOTICE.txt`, which is copied alongside the runtime into the
+build output. Redistributors must meet its license and downstream agreement
+requirements.
+
 ```powershell
 msbuild .\CppCoverage.sln /restore /p:RestorePackagesConfig=true /m /p:Configuration=Debug /p:Platform=x64
 msbuild .\CppCoverage.sln /restore /p:RestorePackagesConfig=true /m /p:Configuration=Debug /p:Platform=ARM64

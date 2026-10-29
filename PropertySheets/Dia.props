@@ -7,13 +7,14 @@
     <DiaArchitecture Condition="'$(Platform)'=='x64'">x64</DiaArchitecture>
     <DiaArchitecture Condition="'$(Platform)'=='ARM64'">arm64</DiaArchitecture>
     <DiaRuntimePath>$(MSBuildThisFileDirectory)..\CppCoverage\Dia\$(DiaArchitecture)\msdia140.dll</DiaRuntimePath>
+    <DiaNoticePath>$(MSBuildThisFileDirectory)..\CppCoverage\Dia\DIA-NOTICE.txt</DiaNoticePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(VsInstallRoot)\DIA SDK\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <PostBuildEvent>
-      <Command>copy /y "$(DiaRuntimePath)" "$(OutDir)"</Command>
+      <Command>copy /y "$(DiaRuntimePath)" "$(OutDir)" &amp;&amp; copy /y "$(DiaNoticePath)" "$(OutDir)"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
 </Project>

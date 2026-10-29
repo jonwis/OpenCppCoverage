@@ -7,5 +7,9 @@ Vendored DLLs come from the installed Visual Studio DIA SDK:
   x64\msdia140.dll: DIA SDK\bin\amd64\msdia140.dll
   arm64\msdia140.dll: DIA SDK\bin\arm64\msdia140.dll
 
-MSBuild copies the runtime matching the tool's target architecture into its
-output directory. Headers and diaguids.lib come from the installed DIA SDK.
+MSBuild copies the runtime matching the tool's target architecture and
+DIA-NOTICE.txt into its output directory. Headers and diaguids.lib come from
+the installed DIA SDK.
+
+DIA-NOTICE.txt identifies the applicable Microsoft redistribution terms and
+downstream agreement requirements. The DLLs retain Microsoft's licensing.
