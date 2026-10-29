@@ -124,14 +124,25 @@ namespace CppCoverageTest
 	TEST(ArchitectureBreakpointTest, QueuedHitsCanRestoreTheSameSite)
 	{
 		CodePage page;
-		ArchitectureBreakpoint patch{GetCurrentProcess(), page.Address(), InstructionSet::Amd64};
-		patch.Install();
-		patch.Restore();
-		patch.Restore();
-		EXPECT_NO_THROW(patch.VerifyRestored());
-		EXPECT_EQ(0x90, page.data[0]);
-		page.data[0] = 0xcc;
-		EXPECT_THROW(patch.VerifyRestored(), wil::ResultException);
+		for (const auto instructionSet : {InstructionSet::Amd64, InstructionSet::Arm64})
+		{
+			ArchitectureBreakpoint::Instruction original{
+			    {{0x1f, 0x20, 0x03, 0xd5}}, ArchitectureBreakpoint::Encoding(instructionSet).size};
+			std::memcpy(page.data, original.bytes.data(), original.size);
+			{
+				ArchitectureBreakpoint first{
+				    GetCurrentProcess(), page.Address(), instructionSet, original};
+				first.Install();
+				first.Restore();
+			}
+			ArchitectureBreakpoint queued{
+			    GetCurrentProcess(), page.Address(), instructionSet, original};
+			EXPECT_NO_THROW(queued.VerifyRestored());
+			EXPECT_NO_THROW(queued.Restore());
+			EXPECT_EQ(0, std::memcmp(page.data, original.bytes.data(), original.size));
+			page.data[0] ^= 0xff;
+			EXPECT_THROW(queued.VerifyRestored(), wil::ResultException);
+		}
 	}
 
 	TEST(ArchitectureBreakpointTest, ProgramCounterResumesTheOriginalInstruction)

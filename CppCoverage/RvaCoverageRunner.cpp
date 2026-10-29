@@ -258,16 +258,17 @@ namespace CppCoverage
 	{
 		struct Breakpoint
 		{
-			size_t block;
-			std::unique_ptr<ArchitectureBreakpoint> patch;
-			bool installed = true;
+			enum class Status : uint8_t { Uninstalled, ApplicationTrap, Installed, Restored };
+			std::array<uint8_t, 4> original{};
+			Status status = Status::Uninstalled;
 		};
 
 		struct Module
 		{
 			size_t aggregate;
 			uint32_t size;
-			std::map<uint64_t, Breakpoint> breakpoints;
+			// Slots share the aggregate module's sorted block indices.
+			std::vector<Breakpoint> breakpoints;
 		};
 
 		struct Process
@@ -420,13 +421,12 @@ namespace CppCoverage
 				"Unsupported mapped ISA in %ls: %hs", path.c_str(), error.what());
 		}
 		uint64_t end = 0;
-		std::vector<bool> applicationBreakpoints;
-		std::vector<ArchitectureBreakpoint::Instruction> originals;
-		originals.reserve(blocks.size());
+		std::vector<State::Breakpoint> breakpoints(blocks.size());
 		std::vector<uint8_t> mapped;
 		uint64_t mappedAddress = 0;
-		for (const auto& block : blocks)
+		for (size_t i = 0; i < blocks.size(); ++i)
 		{
+			const auto& block = blocks[i];
 			const auto patch = ArchitectureBreakpoint::Encoding(block.instructionSet);
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), block.size < patch.size || block.rva < end ||
 			    uint64_t{block.rva} + block.size > identity.sizeOfImage ||
@@ -456,14 +456,12 @@ namespace CppCoverage
 					            (std::min)(size, prefix.size() - offset));
 				offset += size;
 			}
-			applicationBreakpoints.push_back(
-			    ArchitectureBreakpoint::IsApplicationTrap(
+			auto& breakpoint = breakpoints[i];
+			breakpoint.original = prefix;
+			breakpoint.status = ArchitectureBreakpoint::IsApplicationTrap(
 			        block.instructionSet, prefix.data(),
-			        (std::min)(size_t{block.size}, prefix.size())));
-			ArchitectureBreakpoint::Instruction original;
-			original.bytes = prefix;
-			original.size = patch.size;
-			originals.push_back(original);
+			        (std::min)(size_t{block.size}, prefix.size()))
+			    ? State::Breakpoint::Status::ApplicationTrap : State::Breakpoint::Status::Installed;
 		}
 		size_t aggregate = 0;
 		auto& modules = state_->coverage.modules;
@@ -475,6 +473,7 @@ namespace CppCoverage
 			RvaModule module;
 			module.path = path;
 			module.identity = identity;
+			module.blocks.reserve(blocks.size());
 			for (const auto& block : blocks)
 				module.blocks.push_back({block, false});
 			modules.push_back(std::move(module));
@@ -487,33 +486,41 @@ namespace CppCoverage
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !SameBlock(previous[i].block, blocks[i]), "Identical PE identities have different block layouts");
 		}
 		auto inserted = live.modules.emplace(
-		    base, State::Module{aggregate, identity.sizeOfImage, {}});
+		    base, State::Module{aggregate, identity.sizeOfImage, std::move(breakpoints)});
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !inserted.second, "A module was reloaded without an unload notification");
 		auto& installed = inserted.first->second.breakpoints;
 		for (size_t i = 0; i < blocks.size(); ++i)
-		{
 			if (modules[aggregate].blocks[i].executed)
-				continue;
-			const auto address = base + blocks[i].rva;
-			auto entry = installed.emplace(address, State::Breakpoint{
-			    i, applicationBreakpoints[i] ? nullptr :
-			        std::make_unique<ArchitectureBreakpoint>(
-			            process, address, blocks[i].instructionSet, originals[i])});
-			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !entry.second, "Duplicate coverage breakpoint address");
-		}
+				installed[i].status = State::Breakpoint::Status::Uninstalled;
+		std::vector<ArchitectureBreakpoint> rangePatches;
 		std::vector<ArchitectureBreakpoint*> patches;
-		for (auto entry = installed.begin(); entry != installed.end();)
+		for (size_t i = 0; i < blocks.size();)
 		{
-			if (!entry->second.patch)
+			if (installed[i].status != State::Breakpoint::Status::Installed)
 			{
-				++entry;
+				++i;
 				continue;
 			}
-			mappedAddress = ReadCodeRange(process, remote, entry->first, mapped);
+			mappedAddress = ReadCodeRange(process, remote, base + blocks[i].rva, mapped);
+			rangePatches.clear();
+			const auto last = std::lower_bound(
+			    blocks.begin() + i, blocks.end(), mappedAddress + mapped.size() - base,
+			    [](const BasicBlock& block, uint64_t value) { return block.rva < value; });
+			const auto lastIndex = static_cast<size_t>(last - blocks.begin());
+			rangePatches.reserve(lastIndex - i);
+			for (; i < lastIndex; ++i)
+			{
+				if (installed[i].status != State::Breakpoint::Status::Installed)
+					continue;
+				ArchitectureBreakpoint::Instruction original{
+				    installed[i].original, ArchitectureBreakpoint::Encoding(blocks[i].instructionSet).size};
+				rangePatches.emplace_back(process, base + blocks[i].rva,
+				                          blocks[i].instructionSet, original);
+			}
 			patches.clear();
-			for (; entry != installed.end() && entry->first - mappedAddress < mapped.size(); ++entry)
-				if (entry->second.patch)
-					patches.push_back(entry->second.patch.get());
+			patches.reserve(rangePatches.size());
+			for (auto& patch : rangePatches)
+				patches.push_back(&patch);
 			ArchitectureBreakpoint::InstallRange(process, mappedAddress, mapped, patches);
 		}
 	}
@@ -534,24 +541,34 @@ namespace CppCoverage
 				--module;
 				if (address - module->first < module->second.size)
 				{
-					auto hit = module->second.breakpoints.find(address);
-					if (hit != module->second.breakpoints.end())
+					auto& blocks = state_->coverage.modules[module->second.aggregate].blocks;
+					const auto rva = static_cast<uint32_t>(address - module->first);
+					const auto hit = std::lower_bound(
+					    blocks.begin(), blocks.end(), rva,
+					    [](const RvaBlock& block, uint32_t value) { return block.block.rva < value; });
+					if (hit != blocks.end() && hit->block.rva == rva)
 					{
-						if (hit->second.patch)
+						auto& site = module->second.breakpoints[static_cast<size_t>(hit - blocks.begin())];
+						if (site.status == State::Breakpoint::Status::Installed ||
+						    site.status == State::Breakpoint::Status::Restored)
 						{
-							if (hit->second.installed)
+							ArchitectureBreakpoint::Instruction original{
+							    site.original, ArchitectureBreakpoint::Encoding(hit->block.instructionSet).size};
+							ArchitectureBreakpoint patch{
+							    process, address, hit->block.instructionSet, original};
+							if (site.status == State::Breakpoint::Status::Installed)
 							{
-								hit->second.patch->Restore();
-								hit->second.installed = false;
+								patch.Restore();
+								site.status = State::Breakpoint::Status::Restored;
 							}
 							else
-								hit->second.patch->VerifyRestored();
-							hit->second.patch->ResumeThread(thread);
-						}
-						state_->coverage.modules[module->second.aggregate]
-						    .blocks[hit->second.block].executed = true;
-						if (hit->second.patch)
+								patch.VerifyRestored();
+							patch.ResumeThread(thread);
+							hit->executed = true;
 							return ExceptionType::BreakPoint;
+						}
+						if (site.status == State::Breakpoint::Status::ApplicationTrap)
+							hit->executed = true;
 					}
 				}
 			}
