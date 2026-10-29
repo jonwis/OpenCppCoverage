@@ -195,3 +195,18 @@ CNG provider code in additional DLLs is outside the selected module set.
 mapped-code validation, and breakpoint installation. Each phase reports wall time
 and collector-thread CPU time; CPU accounting has Windows scheduler granularity.
 Diagnostics also identify discovery-cache reuse and shared-hit retirement.
+
+The fresh-code fixture checks first-hit and queued-breakpoint handling with four
+synchronized threads calling 1,024 distinct functions. Each thread verifies its
+checksum; the runner verifies that every function entry is covered, then reports
+the first pass and a warmed repeat separately. Use the Release console
+fixture so incremental-link jump thunks do not obscure function entry RVAs.
+
+```powershell
+.\PerformanceTests\Measure-FreshCode.ps1 -Tool .\ARM64\Release\OpenCppCoverage.exe -Fixture .\ARM64\Release\TestCoverageConsole.exe -OutputDirectory .\out\fresh-code
+```
+
+The runner copies the fixture without adjacent PDBs, clears symbol paths, warms
+the fixture, and counterbalances uncollected and collected runs. Every measured
+run starts a new process. `-ControlTool` adds a second collector build for
+comparisons using the same fixture.

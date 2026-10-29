@@ -5,7 +5,15 @@
 #include <wil/result.h>
 
 #include <cstdint>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <iomanip>
+#include <iostream>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
 extern "C" __declspec(dllexport) __declspec(noinline) int RvaSharedPath()
 {
@@ -19,6 +27,26 @@ extern "C" __declspec(dllexport) __declspec(noinline) int RvaChildOnlyPath()
 
 namespace
 {
+	__declspec(noinline) uint64_t FreshSink(uint64_t value)
+	{
+		return value ^ 0x5a5a;
+	}
+
+	template<size_t Index>
+	__declspec(noinline) uint64_t FreshPath(uint64_t seed)
+	{
+		volatile uint64_t value = seed + Index;
+		return FreshSink(value);
+	}
+
+	template<size_t... Indices>
+	constexpr auto FreshPaths(std::index_sequence<Indices...>)
+	{
+		return std::array<uint64_t (*)(uint64_t), sizeof...(Indices)>{{&FreshPath<Indices>...}};
+	}
+
+	constexpr auto freshPaths = FreshPaths(std::make_index_sequence<1024>{});
+
 	wil::unique_handle Event(
 	    const std::wstring& prefix, const wchar_t* suffix, bool create)
 	{
@@ -47,6 +75,70 @@ namespace
 		return *reinterpret_cast<const volatile uint8_t*>(address) == 0xcc;
 #endif
 	}
+
+	void FreshCode()
+	{
+		std::array<double, 2> seconds{};
+		uint64_t expected = 0;
+		for (size_t repeat = 0; repeat < 16; ++repeat)
+			for (size_t index = 0; index < freshPaths.size(); ++index)
+				expected += (repeat + index) ^ 0x5a5a;
+		for (auto& elapsed : seconds)
+		{
+			wil::unique_handle start{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+			THROW_LAST_ERROR_IF(!start);
+			wil::unique_handle ready{CreateEventW(nullptr, TRUE, FALSE, nullptr)};
+			THROW_LAST_ERROR_IF(!ready);
+			std::array<uint64_t, 4> sums{};
+			std::atomic<size_t> waiting{0};
+			std::atomic<bool> failed{false};
+			std::vector<std::thread> threads;
+			auto join = wil::scope_exit([&]
+			{
+				SetEvent(start.get());
+				for (auto& thread : threads)
+					if (thread.joinable())
+						thread.join();
+			});
+			for (size_t worker = 0; worker < sums.size(); ++worker)
+				threads.emplace_back([&, worker]
+				{
+					if (++waiting == sums.size() && !SetEvent(ready.get()))
+						failed = true;
+					if (WaitForSingleObject(start.get(), 60000) != WAIT_OBJECT_0)
+					{
+						failed = true;
+						return;
+					}
+					uint64_t sum = 0;
+					for (uint64_t repeat = 0; repeat < 16; ++repeat)
+						for (const auto path : freshPaths)
+							sum += path(repeat);
+					sums[worker] = sum;
+				});
+			Wait(ready.get());
+			const auto began = std::chrono::steady_clock::now();
+			THROW_IF_WIN32_BOOL_FALSE(SetEvent(start.get()));
+			for (auto& thread : threads)
+				thread.join();
+			elapsed = std::chrono::duration<double>(
+			    std::chrono::steady_clock::now() - began).count();
+			THROW_HR_IF(E_UNEXPECTED, failed);
+			for (const auto sum : sums)
+				THROW_HR_IF_MSG(E_UNEXPECTED, sum != expected,
+				    "Fresh-code checksum mismatch");
+		}
+		const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+		std::cout << std::setprecision(9) << "{\"freshSeconds\":" << seconds[0]
+		          << ",\"warmSeconds\":" << seconds[1] << ",\"workers\":4,\"rvas\":[";
+		for (size_t index = 0; index < freshPaths.size(); ++index)
+		{
+			if (index)
+				std::cout << ',';
+			std::cout << reinterpret_cast<uintptr_t>(freshPaths[index]) - base;
+		}
+		std::cout << "]}" << std::endl;
+	}
 }
 
 namespace TestCoverageConsole
@@ -55,6 +147,12 @@ namespace TestCoverageConsole
 	{
 		THROW_HR_IF(E_INVALIDARG, argc < 4);
 		const std::wstring mode{argv[3]};
+		if (mode == L"fresh")
+		{
+			THROW_HR_IF(E_INVALIDARG, argc != 4);
+			FreshCode();
+			return;
+		}
 		if (mode == L"child")
 		{
 			THROW_HR_IF(E_INVALIDARG, argc != 6);
