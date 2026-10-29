@@ -5,6 +5,7 @@
 #include <wil/result.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <cwchar>
 #include <limits>
@@ -28,6 +29,31 @@ namespace CppCoverage
 	namespace
 	{
 		constexpr DWORD EmulatedBreakpoint = 0x4000001f;
+
+		struct PhaseClock
+		{
+			std::chrono::steady_clock::time_point wall = std::chrono::steady_clock::now();
+			uint64_t cpu;
+
+			PhaseClock()
+			{
+				FILETIME created{}, exited{}, kernel{}, user{};
+				THROW_LAST_ERROR_IF(!GetThreadTimes(
+				    GetCurrentThread(), &created, &exited, &kernel, &user));
+				cpu = (uint64_t{kernel.dwHighDateTime} << 32) + kernel.dwLowDateTime +
+				      (uint64_t{user.dwHighDateTime} << 32) + user.dwLowDateTime;
+			}
+
+			double WallMillisecondsSince(const PhaseClock& before) const
+			{
+				return std::chrono::duration<double, std::milli>(wall - before.wall).count();
+			}
+
+			double CpuMillisecondsSince(const PhaseClock& before) const
+			{
+				return static_cast<double>(cpu - before.cpu) / 10000;
+			}
+		};
 
 		void Read(HANDLE process, uint64_t address, void* data, size_t size)
 		{
@@ -395,6 +421,7 @@ namespace CppCoverage
 		if (!selected)
 			return;
 
+		const PhaseClock started;
 		PeImage image{path};
 		const auto& identity = image.Identity();
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), remote.file.Machine != identity.machine ||
@@ -405,12 +432,14 @@ namespace CppCoverage
 		for (const auto rva : image.FunctionOverrideRelocations())
 			image.ApplyFunctionOverrideRelocation(
 				rva, Read<uint32_t>(process, RemoteAddress(remote, rva, 4)));
+		const PhaseClock parsed;
 		auto blocks = BasicBlockDiscovery{}.Discover(image);
 		std::sort(blocks.begin(), blocks.end(), [](const BasicBlock& lhs, const BasicBlock& rhs)
 		{
 			return lhs.rva < rhs.rva;
 		});
 		blocks.erase(std::unique(blocks.begin(), blocks.end(), SameBlock), blocks.end());
+		const PhaseClock discovered;
 		try
 		{
 			ValidateMappedInstructionSets(process, remote, blocks);
@@ -463,6 +492,7 @@ namespace CppCoverage
 			        (std::min)(size_t{block.size}, prefix.size()))
 			    ? State::Breakpoint::Status::ApplicationTrap : State::Breakpoint::Status::Installed;
 		}
+		const PhaseClock validated;
 		size_t aggregate = 0;
 		auto& modules = state_->coverage.modules;
 		for (; aggregate < modules.size(); ++aggregate)
@@ -494,6 +524,7 @@ namespace CppCoverage
 				installed[i].status = State::Breakpoint::Status::Uninstalled;
 		std::vector<ArchitectureBreakpoint> rangePatches;
 		std::vector<ArchitectureBreakpoint*> patches;
+		size_t installedCount = 0;
 		for (size_t i = 0; i < blocks.size();)
 		{
 			if (installed[i].status != State::Breakpoint::Status::Installed)
@@ -516,6 +547,7 @@ namespace CppCoverage
 				    installed[i].original, ArchitectureBreakpoint::Encoding(blocks[i].instructionSet).size};
 				rangePatches.emplace_back(process, base + blocks[i].rva,
 				                          blocks[i].instructionSet, original);
+				++installedCount;
 			}
 			patches.clear();
 			patches.reserve(rangePatches.size());
@@ -523,6 +555,18 @@ namespace CppCoverage
 				patches.push_back(&patch);
 			ArchitectureBreakpoint::InstallRange(process, mappedAddress, mapped, patches);
 		}
+		const PhaseClock finished;
+		LOG_DEBUG << "RVA preparation pid=" << ProcessId(process)
+		          << " module=" << path.filename().wstring()
+		          << " blocks=" << blocks.size() << " installed=" << installedCount
+		          << " parse_wall_ms=" << parsed.WallMillisecondsSince(started)
+		          << " parse_cpu_ms=" << parsed.CpuMillisecondsSince(started)
+		          << " discovery_wall_ms=" << discovered.WallMillisecondsSince(parsed)
+		          << " discovery_cpu_ms=" << discovered.CpuMillisecondsSince(parsed)
+		          << " validation_wall_ms=" << validated.WallMillisecondsSince(discovered)
+		          << " validation_cpu_ms=" << validated.CpuMillisecondsSince(discovered)
+		          << " installation_wall_ms=" << finished.WallMillisecondsSince(validated)
+		          << " installation_cpu_ms=" << finished.CpuMillisecondsSince(validated);
 	}
 
 	IDebugEventsHandler::ExceptionType RvaCoverageRunner::OnException(

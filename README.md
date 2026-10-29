@@ -184,3 +184,7 @@ collector CPU; `launchedProcessCpuSeconds` is collector CPU in collected runs an
 application CPU in baseline runs. These are warm-cache, single-threaded workload
 measurements, with the selected module set determining the coverage overhead.
 CNG provider code in additional DLLs is outside the selected module set.
+
+`--verbose` logs per-module RVA preparation timings for image parsing, discovery,
+mapped-code validation, and breakpoint installation. Each phase reports wall time
+and collector-thread CPU time; CPU accounting has Windows scheduler granularity.
