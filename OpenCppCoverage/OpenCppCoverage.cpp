@@ -234,6 +234,8 @@ namespace OpenCppCoverage
 				    options.GetSubstitutePdbSourcePaths());
 
 				runCoverageSettings.SetCoverChildren(options.IsCoverChildrenModeEnabled());
+				if (options.GetProcessPatterns())
+					runCoverageSettings.SetProcessPatterns(*options.GetProcessPatterns());
 				runCoverageSettings.SetContinueAfterCppException(options.IsContinueAfterCppExceptionModeEnabled());
                 runCoverageSettings.SetStopOnAssert(options.IsStopOnAssertModeEnabled());
                 runCoverageSettings.SetMaxUnmatchPathsForWarning(maxUnmatchPathsForWarning);

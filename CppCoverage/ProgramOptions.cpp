@@ -64,6 +64,12 @@ namespace CppCoverage
 				(ProgramOptions::SymbolFreeOption.c_str(), "Collect basic-block RVA coverage without loading symbols. Only binary export is supported.")
 				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
 				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Search directory for matching images during --resolve. Can have multiple occurrences.")
+				(ProgramOptions::SelectedProcessesOption.c_str(),
+				po::value<T_Strings>()->default_value({ all }, all)->composing(),
+				"Main executable glob for symbol-free launch coverage. Basename unless the glob contains '\\'. Defaults to all processes; --cover_children is still required for descendants. Can have multiple occurrences.")
+				(ProgramOptions::ExcludedProcessesOption.c_str(),
+				po::value<T_Strings>()->composing(),
+				"Exclude main executable globs from symbol-free launch coverage. Exclusions win. Can have multiple occurrences.")
 				(ProgramOptions::SelectedModulesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
 				"The pattern that module's paths should match. Can have multiple occurrences.")
@@ -110,6 +116,8 @@ namespace CppCoverage
 	//-------------------------------------------------------------------------
 	const std::string ProgramOptions::SelectedModulesOption = "modules";
 	const std::string ProgramOptions::ExcludedModulesOption = "excluded_modules";
+	const std::string ProgramOptions::SelectedProcessesOption = "processes";
+	const std::string ProgramOptions::ExcludedProcessesOption = "excluded_processes";
 	const std::string ProgramOptions::SelectedSourcesOption = "sources";
 	const std::string ProgramOptions::ExcludedSourcesOption = "excluded_sources";
 	const std::string ProgramOptions::VerboseOption = "verbose";
