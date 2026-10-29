@@ -80,17 +80,19 @@ Maintaining this project and working with its community was a valuable experienc
 Build `CppCoverage.sln` with Visual Studio 2022 and the v143 C++ tools. Install the
 Windows SDK, DIA SDK, and Visual Studio vcpkg component. ARM64 builds also require
 the ARM64 C++ tools; the mixed-ISA fixture requires the ARM64EC tools.
-The x64 C++/CLI test fixture requires C++/CLI support and the legacy
-`Microsoft.VisualStudio.QualityTools.UnitTestFramework` assembly.
+The x64 C++/CLI test fixture requires C++/CLI support and the .NET Framework 4.8
+targeting pack. Its MSTest framework and adapter are restored from NuGet.
 
 MSBuild restores the pinned dependencies from `vcpkg.json`. Dependencies are
 installed under `vcpkg_installed\<Platform>` so architecture builds remain
 independent. An existing vcpkg checkout can be selected with `/p:VcpkgRoot=...`.
 No machine-wide vcpkg integration is required.
+NuGet restores the pinned C++/CLI test dependencies to the repository's `packages`
+directory using the configured package sources.
 
 ```powershell
-msbuild .\CppCoverage.sln /m /p:Configuration=Debug /p:Platform=x64
-msbuild .\CppCoverage.sln /m /p:Configuration=Debug /p:Platform=ARM64
+msbuild .\CppCoverage.sln /restore /p:RestorePackagesConfig=true /m /p:Configuration=Debug /p:Platform=x64
+msbuild .\CppCoverage.sln /restore /p:RestorePackagesConfig=true /m /p:Configuration=Debug /p:Platform=ARM64
 ```
 
 ## Download

@@ -34,11 +34,23 @@ namespace CppCoverageTest
 		fs::path vsConsoleTestPath = vsPath / "Common7" / "IDE" /
 		                             "CommonExtensions" / "Microsoft" /
 		                             "TestWindow" / "vstest.console.exe";
-		auto testCppCliPath = (fs::path{OUT_DIR} / "DefaultTest.dll").wstring();
+		if (!fs::exists(vsConsoleTestPath))
+			vsConsoleTestPath = vsPath / "Common7" / "IDE" / "Extensions" /
+			                   "TestPlatform" / "vstest.console.exe";
+		ASSERT_TRUE(fs::exists(vsConsoleTestPath)) << vsConsoleTestPath;
+		const auto testCppCliPath = fs::path{OUT_DIR} / "DefaultTest.dll";
 		auto sharedLibModulePath = TestCoverageSharedLib::GetOutputBinaryPath();
 
+#ifdef _WIN64
+		const std::wstring platform = L"/Platform:x64";
+#else
+		const std::wstring platform = L"/Platform:x86";
+#endif
 		TestTools::CoverageArgs coverageArgs(
-		    {testCppCliPath}, testCppCliPath, L"None");
+		    {testCppCliPath.wstring(), platform,
+		     L"/TestAdapterPath:" + testCppCliPath.parent_path().wstring(),
+		     L"--", L"RunConfiguration.TreatNoTestsAsError=true"},
+		    testCppCliPath.wstring(), L"None");
 		coverageArgs.modulePatternCollection_.push_back(
 		    sharedLibModulePath.wstring());
 		coverageArgs.programToRun_ = vsConsoleTestPath;
