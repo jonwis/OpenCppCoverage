@@ -3,7 +3,9 @@
 
 #include <Windows.h>
 #include <wil/result.h>
+#include <wil/resource.h>
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -31,26 +33,37 @@ namespace CppCoverage
 			       std::memcmp(lhs.bytes.data(), rhs.bytes.data(), lhs.size) == 0;
 		}
 
-		void Write(HANDLE process, uint64_t address,
-		           const ArchitectureBreakpoint::Instruction& instruction)
+		void Write(HANDLE process, uint64_t address, const uint8_t* bytes, size_t size)
 		{
 			auto remote = reinterpret_cast<void*>(address);
 			DWORD protection = 0;
-			THROW_LAST_ERROR_IF_MSG(!VirtualProtectEx(process, remote, instruction.size,
+			THROW_LAST_ERROR_IF_MSG(!VirtualProtectEx(process, remote, size,
 			                      PAGE_EXECUTE_READWRITE | PAGE_TARGETS_NO_UPDATE, &protection), "Making breakpoint instruction writable");
-			SIZE_T written = 0;
-			const BOOL success = WriteProcessMemory(
-			    process, remote, instruction.bytes.data(), instruction.size, &written);
-			const DWORD writeError = GetLastError();
-			DWORD ignored = 0;
 			DWORD restoreProtection = protection;
 			if (protection & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
 			                  PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))
 				restoreProtection |= PAGE_TARGETS_NO_UPDATE;
-			THROW_LAST_ERROR_IF_MSG(!VirtualProtectEx(process, remote, instruction.size, restoreProtection, &ignored), "Restoring breakpoint page protection");
+			auto restore = wil::scope_exit([&] {
+				DWORD ignored = 0;
+				LOG_IF_WIN32_BOOL_FALSE(VirtualProtectEx(
+				    process, remote, size, restoreProtection, &ignored));
+			});
+			SIZE_T written = 0;
+			const BOOL success = WriteProcessMemory(
+			    process, remote, bytes, size, &written);
+			const DWORD writeError = GetLastError();
+			DWORD ignored = 0;
+			THROW_LAST_ERROR_IF_MSG(!VirtualProtectEx(process, remote, size, restoreProtection, &ignored), "Restoring breakpoint page protection");
+			restore.release();
 			THROW_WIN32_IF_MSG(writeError, !success, "Writing breakpoint instruction");
-			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), written != instruction.size, "Incomplete breakpoint instruction write");
-			THROW_LAST_ERROR_IF_MSG(!FlushInstructionCache(process, remote, instruction.size), "Flushing remote breakpoint instruction");
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), written != size, "Incomplete breakpoint instruction write");
+			THROW_LAST_ERROR_IF_MSG(!FlushInstructionCache(process, remote, size), "Flushing remote breakpoint instruction");
+		}
+
+		void Write(HANDLE process, uint64_t address,
+		           const ArchitectureBreakpoint::Instruction& instruction)
+		{
+			Write(process, address, instruction.bytes.data(), instruction.size);
 		}
 	}
 
@@ -113,12 +126,67 @@ namespace CppCoverage
 
 	ArchitectureBreakpoint::ArchitectureBreakpoint(
 	    HANDLE process, uint64_t address, InstructionSet instructionSet)
-	    : process_{process}, address_{address}, instructionSet_{instructionSet}
+	    : ArchitectureBreakpoint(process, address, instructionSet,
+	          Read(process, address, Encoding(instructionSet).size))
+	{
+	}
+
+	ArchitectureBreakpoint::ArchitectureBreakpoint(
+	    HANDLE process, uint64_t address, InstructionSet instructionSet,
+	    Instruction original)
+	    : process_{process}, address_{address}, instructionSet_{instructionSet},
+	      original_{original}
 	{
 		const auto encoding = Encoding(instructionSet);
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), instructionSet == InstructionSet::Arm64 && (address & 3), "Unaligned ARM64 breakpoint address");
-		original_ = Read(process_, address_, encoding.size);
+		THROW_HR_IF_MSG(E_INVALIDARG, original_.size != encoding.size,
+			"Invalid original breakpoint instruction size");
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), IsApplicationTrap(instructionSet, original_.bytes.data(), original_.size), "A discovered block begins with an application breakpoint");
+	}
+
+	void ArchitectureBreakpoint::InstallRange(
+	    HANDLE process, uint64_t address, const std::vector<uint8_t>& original,
+	    const std::vector<ArchitectureBreakpoint*>& patches)
+	{
+		THROW_HR_IF_MSG(E_INVALIDARG, original.empty() || original.size() > 2 * 1024 * 1024 ||
+		    address > (std::numeric_limits<uint64_t>::max)() - original.size(),
+		    "Invalid breakpoint installation range");
+		MEMORY_BASIC_INFORMATION memory{};
+		THROW_LAST_ERROR_IF_MSG(!VirtualQueryEx(process, reinterpret_cast<void*>(address),
+		    &memory, sizeof(memory)), "Querying breakpoint installation range");
+		const auto region = reinterpret_cast<uint64_t>(memory.BaseAddress);
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+		    memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+		    address < region || address - region >= memory.RegionSize ||
+		    original.size() > memory.RegionSize - (address - region),
+		    "Breakpoint installation range crosses a memory protection boundary");
+		auto modified = original;
+		uint64_t end = address;
+		for (const auto* patch : patches)
+		{
+			THROW_HR_IF_MSG(E_INVALIDARG, !patch || patch->process_ != process ||
+			    patch->address_ < end || patch->address_ - address >= original.size() ||
+			    patch->original_.size > original.size() - (patch->address_ - address),
+			    "Unordered, overlapping or out-of-range breakpoint");
+			const auto offset = static_cast<size_t>(patch->address_ - address);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+			    std::memcmp(original.data() + offset, patch->original_.bytes.data(),
+			                patch->original_.size) != 0,
+			    "Code changed before range breakpoint installation");
+			const auto encoding = Encoding(patch->instructionSet_);
+			std::memcpy(modified.data() + offset, encoding.bytes.data(), encoding.size);
+			end = patch->address_ + encoding.size;
+		}
+		if (patches.empty())
+			return;
+		std::vector<uint8_t> current(original.size());
+		SIZE_T read = 0;
+		THROW_LAST_ERROR_IF_MSG(!ReadProcessMemory(process, reinterpret_cast<void*>(address),
+		    current.data(), current.size(), &read), "Verifying breakpoint installation range");
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+		    read != current.size() || current != original,
+		    "Code changed before range breakpoint write");
+		Write(process, address, modified.data(), modified.size());
 	}
 
 	void ArchitectureBreakpoint::Install() const

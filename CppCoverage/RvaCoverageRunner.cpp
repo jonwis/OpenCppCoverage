@@ -85,6 +85,36 @@ namespace CppCoverage
 			return image.base + rva;
 		}
 
+		uint64_t ReadCodeRange(
+		    HANDLE process, const RemoteImage& image, uint64_t address,
+		    std::vector<uint8_t>& bytes)
+		{
+			MEMORY_BASIC_INFORMATION memory{};
+			THROW_LAST_ERROR_IF_MSG(!VirtualQueryEx(process, reinterpret_cast<void*>(address),
+			    &memory, sizeof(memory)), "Querying mapped code range");
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+			    memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)),
+			    "Mapped code range is not readable");
+			SYSTEM_INFO system{};
+			GetSystemInfo(&system);
+			const auto first = (std::max)(image.base,
+			    address - address % system.dwPageSize);
+			const auto region = reinterpret_cast<uint64_t>(memory.BaseAddress);
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+			    first < region || first - region >= memory.RegionSize ||
+			    region > (std::numeric_limits<uint64_t>::max)() - memory.RegionSize ||
+			    first >= image.base + image.optional.SizeOfImage,
+			    "Invalid mapped code region");
+			const auto last = first + (std::min)({uint64_t{2 * 1024 * 1024},
+			    region + memory.RegionSize - first,
+			    image.base + image.optional.SizeOfImage - first});
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+			    address < first || address >= last, "Mapped code range exceeds image");
+			bytes.resize(static_cast<size_t>(last - first));
+			Read(process, first, bytes.data(), bytes.size());
+			return first;
+		}
+
 		std::set<uint64_t> LoaderBreakpoints(HANDLE process, const RemoteImage& image)
 		{
 			std::set<uint64_t> result;
@@ -391,6 +421,10 @@ namespace CppCoverage
 		}
 		uint64_t end = 0;
 		std::vector<bool> applicationBreakpoints;
+		std::vector<ArchitectureBreakpoint::Instruction> originals;
+		originals.reserve(blocks.size());
+		std::vector<uint8_t> mapped;
+		uint64_t mappedAddress = 0;
 		for (const auto& block : blocks)
 		{
 			const auto patch = ArchitectureBreakpoint::Encoding(block.instructionSet);
@@ -399,20 +433,37 @@ namespace CppCoverage
 			    (block.instructionSet == InstructionSet::Arm64 &&
 			     ((block.rva | block.size) & 3)), "Invalid or overlapping discovered basic blocks");
 			end = uint64_t{block.rva} + block.size;
-			std::vector<uint8_t> mapped(block.size);
-			Read(process, base + block.rva, mapped.data(), mapped.size());
-			if (!image.MatchesMappedCode(block.rva, mapped.data(), mapped.size(), base))
+			std::array<uint8_t, 4> prefix{};
+			for (size_t offset = 0; offset < block.size;)
 			{
-				std::ostringstream message;
-				message << "Unsupported mapped image view in " << path.u8string()
-				        << " at RVA 0x" << std::hex << block.rva
-				        << ": code differs from the on-disk image after ASLR normalization"
-				        << " (ARM64X dynamic relocations and runtime code changes are unsupported)";
-				THROW_HR_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), "%hs", message.str().c_str());
+				const auto address = base + block.rva + offset;
+				if (address < mappedAddress || address - mappedAddress >= mapped.size())
+					mappedAddress = ReadCodeRange(process, remote, address, mapped);
+				const auto position = static_cast<size_t>(address - mappedAddress);
+				const auto size = (std::min)(size_t{block.size} - offset, mapped.size() - position);
+				if (!image.MatchesMappedCode(block.rva + static_cast<uint32_t>(offset),
+				                            mapped.data() + position, size, base))
+				{
+					std::ostringstream message;
+					message << "Unsupported mapped image view in " << path.u8string()
+					        << " at RVA 0x" << std::hex << block.rva + offset
+					        << ": code differs from the on-disk image after ASLR normalization"
+					        << " (ARM64X dynamic relocations and runtime code changes are unsupported)";
+					THROW_HR_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), "%hs", message.str().c_str());
+				}
+				if (offset < prefix.size())
+					std::memcpy(prefix.data() + offset, mapped.data() + position,
+					            (std::min)(size, prefix.size() - offset));
+				offset += size;
 			}
 			applicationBreakpoints.push_back(
 			    ArchitectureBreakpoint::IsApplicationTrap(
-			        block.instructionSet, mapped.data(), mapped.size()));
+			        block.instructionSet, prefix.data(),
+			        (std::min)(size_t{block.size}, prefix.size())));
+			ArchitectureBreakpoint::Instruction original;
+			original.bytes = prefix;
+			original.size = patch.size;
+			originals.push_back(original);
 		}
 		size_t aggregate = 0;
 		auto& modules = state_->coverage.modules;
@@ -447,10 +498,23 @@ namespace CppCoverage
 			auto entry = installed.emplace(address, State::Breakpoint{
 			    i, applicationBreakpoints[i] ? nullptr :
 			        std::make_unique<ArchitectureBreakpoint>(
-			            process, address, blocks[i].instructionSet)});
+			            process, address, blocks[i].instructionSet, originals[i])});
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !entry.second, "Duplicate coverage breakpoint address");
-			if (entry.first->second.patch)
-				entry.first->second.patch->Install();
+		}
+		std::vector<ArchitectureBreakpoint*> patches;
+		for (auto entry = installed.begin(); entry != installed.end();)
+		{
+			if (!entry->second.patch)
+			{
+				++entry;
+				continue;
+			}
+			mappedAddress = ReadCodeRange(process, remote, entry->first, mapped);
+			patches.clear();
+			for (; entry != installed.end() && entry->first - mappedAddress < mapped.size(); ++entry)
+				if (entry->second.patch)
+					patches.push_back(entry->second.patch.get());
+			ArchitectureBreakpoint::InstallRange(process, mappedAddress, mapped, patches);
 		}
 	}
 

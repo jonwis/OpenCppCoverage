@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "CppCoverageExport.hpp"
 #include "PeImage.hpp"
@@ -26,6 +27,11 @@ namespace CppCoverage
 		static void ValidateTarget(HANDLE process, uint16_t machine);
 
 		ArchitectureBreakpoint(HANDLE process, uint64_t address, InstructionSet);
+		ArchitectureBreakpoint(
+		    HANDLE process, uint64_t address, InstructionSet, Instruction original);
+		static void InstallRange(
+		    HANDLE process, uint64_t address, const std::vector<uint8_t>& original,
+		    const std::vector<ArchitectureBreakpoint*>& patches);
 		void Install() const;
 		void Restore() const;
 		void VerifyRestored() const;
