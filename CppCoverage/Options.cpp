@@ -226,6 +226,8 @@ namespace CppCoverage
 		if (options.optionalStartInfo_)
 			ostr << *options.optionalStartInfo_ << std::endl;
 		ostr << L"Modules: " << options.modules_ << std::endl;
+		if (options.processPatterns_)
+			ostr << L"Processes: " << *options.processPatterns_ << std::endl;
 		ostr << L"Sources: " << options.sources_ << std::endl;
 		ostr << L"Log Level: " << GetLogLevelStr(options.GetLogLevel()) << std::endl;
 		ostr << L"Symbol-free: " << options.symbolFree_ << std::endl;

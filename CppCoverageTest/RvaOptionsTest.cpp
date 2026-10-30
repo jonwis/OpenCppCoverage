@@ -7,6 +7,7 @@
 #include "CppCoverage/OptionsParser.hpp"
 #include "CppCoverage/ExportOptionParser.hpp"
 #include "CppCoverage/IOptionParser.hpp"
+#include "CppCoverage/ProcessFilter.hpp"
 
 namespace
 {
@@ -72,4 +73,94 @@ TEST(RvaOptionsTest, ResolutionRejectsMissingInputAndProgram)
 	EXPECT_FALSE(ParseRvaOptions({"--resolve", "missing-rva-input.cov"}));
 	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--", "test.exe"}));
 	EXPECT_FALSE(ParseRvaOptions({"--module_dir", ".", "--", "test.exe"}));
+}
+
+TEST(RvaOptionsTest, ProcessFiltersRequireSymbolFreeLaunch)
+{
+	EXPECT_FALSE(ParseRvaOptions({"--processes", "*notepad*", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*notepad*"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--excluded_processes", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--processes", "*"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "C:test.exe", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "C:/test.exe", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--excluded_processes", "a\\..\\b", "--", "test.exe"}));
+}
+
+TEST(RvaOptionsTest, RepeatedProcessFiltersAreIndependentOfModulesAndChildren)
+{
+	auto options = ParseRvaOptions({
+	    "--symbol-free", "--processes", "te.processhost*", "--processes", "*notepad*",
+	    "--excluded_processes", "*helper*", "--excluded_processes", "*blocked*",
+	    "--modules", "shcore.dll", "--", "test.exe"});
+	ASSERT_TRUE(options);
+	ASSERT_TRUE(options->GetProcessPatterns());
+	const CppCoverage::ProcessFilter filter{*options->GetProcessPatterns()};
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\te.processhost.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\notepad.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\te.processhost-helper.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\blocked-notepad.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\shcore.dll"));
+	EXPECT_FALSE(options->IsCoverChildrenModeEnabled());
+	EXPECT_EQ(std::vector<std::wstring>{L"shcore.dll"}, options->GetModulePatterns().GetSelectedPatterns());
+}
+
+TEST(RvaOptionsTest, ExclusionsOnlySelectAllOtherLaunchedProcesses)
+{
+	auto options = ParseRvaOptions({
+	    "--symbol-free", "--cover_children", "--excluded_processes", "*helper*", "--", "test.exe"});
+	ASSERT_TRUE(options);
+	ASSERT_TRUE(options->GetProcessPatterns());
+	const CppCoverage::ProcessFilter filter{*options->GetProcessPatterns()};
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\parent.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\child-helper.exe"));
+	auto unfiltered = ParseRvaOptions({"--symbol-free", "--", "test.exe"});
+	ASSERT_TRUE(unfiltered);
+	EXPECT_FALSE(unfiltered->GetProcessPatterns());
+}
+
+TEST(ProcessFilterTest, WholeBasenameAndOrdinalCase)
+{
+	CppCoverage::Patterns patterns;
+	patterns.AddSelectedPatterns(L"svchost.exe");
+	patterns.AddSelectedPatterns(L"*notepad*");
+	patterns.AddSelectedPatterns(L"te.processhost*");
+	patterns.AddSelectedPatterns(L"\u00e5pp.exe");
+	const CppCoverage::ProcessFilter filter{patterns};
+	EXPECT_TRUE(filter.IsSelected(L"C:\\Windows\\System32\\SVCHOST.EXE"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\old-svchost.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\svchost.exe.backup"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\notepad\\other.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\my-notepad-copy.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\TE.ProcessHost42.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\\u00c5PP.EXE"));
+}
+
+TEST(ProcessFilterTest, PathsExtendedNamespacesAndExclusions)
+{
+	CppCoverage::Patterns patterns;
+	patterns.AddSelectedPatterns(L"*system32\\runtimebroker*");
+	patterns.AddSelectedPatterns(L"\\\\?\\C:\\tools\\app.exe");
+	patterns.AddSelectedPatterns(L"\\\\server\\share\\app.exe");
+	patterns.AddExcludedPatterns(L"*blocked*");
+	const CppCoverage::ProcessFilter filter{patterns};
+	EXPECT_TRUE(filter.IsSelected(L"C:\\Windows\\System32\\RuntimeBroker.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\other\\RuntimeBroker.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\system32\\runtimebroker-blocked.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\TOOLS\\app.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"\\\\?\\C:\\tools\\app.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"\\\\?\\UNC\\SERVER\\SHARE\\app.exe"));
+}
+
+TEST(ProcessFilterTest, StarsBacktrackAndOtherCharactersAreLiteral)
+{
+	CppCoverage::Patterns patterns;
+	patterns.AddSelectedPatterns(L"a**b*b.exe");
+	patterns.AddSelectedPatterns(L"app?[1].exe");
+	const CppCoverage::ProcessFilter filter{patterns};
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\abcb.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\axybzb.exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\ab.exe"));
+	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\app?[1].exe"));
+	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\appx1.exe"));
 }

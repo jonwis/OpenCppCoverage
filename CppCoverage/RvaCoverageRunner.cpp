@@ -21,6 +21,7 @@
 #include "Debugger.hpp"
 #include "ExceptionHandler.hpp"
 #include "HandleInformation.hpp"
+#include "ProcessFilter.hpp"
 #include "RunCoverageSettings.hpp"
 #include "Tools/Log.hpp"
 
@@ -319,12 +320,14 @@ namespace CppCoverage
 			std::map<uint64_t, Module> modules;
 			std::map<uint64_t, Loader> loaders;
 			bool startupBreakpointHandled = false;
+			bool selected = true;
 			size_t observedEpoch = 0;
 
 		};
 
 		RvaCoverage coverage;
 		std::unique_ptr<CoverageFilterManager> filter;
+		std::unique_ptr<ProcessFilter> processFilter;
 		ExceptionHandler exceptions;
 		std::map<DWORD, std::unique_ptr<Process>> processes;
 		std::vector<Aggregate> aggregates;
@@ -363,6 +366,8 @@ namespace CppCoverage
 	RvaCoverage RvaCoverageRunner::RunCoverage(const RunCoverageSettings& settings)
 	{
 		state_ = std::make_unique<State>();
+		if (settings.GetProcessPatterns())
+			state_->processFilter = std::make_unique<ProcessFilter>(*settings.GetProcessPatterns());
 		state_->filter = std::make_unique<CoverageFilterManager>(
 		    settings.GetCoverageFilterSettings(), std::vector<UnifiedDiffSettings>{},
 		    std::vector<std::wstring>{}, false);
@@ -387,6 +392,13 @@ namespace CppCoverage
 		try
 		{
 			auto process = std::make_unique<State::Process>();
+			if (state_->processFilter)
+			{
+				const auto path = HandleInformation{}.ComputeProcessFilename(info.hProcess);
+				process->selected = state_->processFilter->IsSelected(path);
+				LOG_INFO << L"RVA process " << id << L" main_image=" << path
+				         << L" selected=" << (process->selected ? L"true" : L"false");
+			}
 			THROW_LAST_ERROR_IF_MSG(!DuplicateHandle(GetCurrentProcess(), info.hProcess,
 			                     GetCurrentProcess(), process->handle.put(), 0,
 			                     FALSE, DUPLICATE_SAME_ACCESS), "Retaining debugged process handle");
@@ -446,7 +458,7 @@ namespace CppCoverage
 		auto& live = *state_->processes.at(ProcessId(process));
 		const auto base = reinterpret_cast<uint64_t>(baseAddress);
 		const bool loader = _wcsicmp(path.filename().c_str(), L"ntdll.dll") == 0;
-		const bool selected = state_->filter->IsModuleSelected(path.wstring());
+		const bool selected = live.selected && state_->filter->IsModuleSelected(path.wstring());
 		if (!loader && !selected)
 			return;
 		const auto remote = ReadImage(process, base);

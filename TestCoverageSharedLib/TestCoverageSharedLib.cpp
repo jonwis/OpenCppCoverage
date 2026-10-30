@@ -52,4 +52,34 @@ namespace TestCoverageSharedLib
 	{
 		SharedFunction(true);
 	}
+
+	int RvaChainRootPath()
+	{
+		return 17001;
+	}
+
+	int RvaChainMiddlePath()
+	{
+		return 17002;
+	}
+
+	int RvaChainChildAPath()
+	{
+		return 17003;
+	}
+
+	int RvaChainChildBPath()
+	{
+		return 17004;
+	}
+
+	int RvaChainGrandchildPath()
+	{
+		return 17005;
+	}
+
+	int RvaChainExcludedPath()
+	{
+		return 17006;
+	}
 }

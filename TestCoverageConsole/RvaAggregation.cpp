@@ -1,10 +1,13 @@
 #include "TestBasic.hpp"
+#include "TestCoverageSharedLib/TestCoverageSharedLib.hpp"
+#include "Tools/Tool.hpp"
 
 #include <Windows.h>
 #include <wil/resource.h>
 #include <wil/result.h>
 
 #include <cstdint>
+#include <filesystem>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -74,6 +77,51 @@ namespace
 #else
 		return *reinterpret_cast<const volatile uint8_t*>(address) == 0xcc;
 #endif
+	}
+
+	void ProcessChain()
+	{
+		std::wstring executable(32768, L'\0');
+		const auto size = GetModuleFileNameW(
+		    nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+		THROW_LAST_ERROR_IF(!size);
+		THROW_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), size >= executable.size());
+		executable.resize(size);
+		const std::filesystem::path path{executable};
+		const auto name = path.filename().wstring();
+		std::wcout << name << L" main_trap="
+		           << (SharedPathHasTrap() ? L"true" : L"false") << std::endl;
+		THROW_HR_IF(E_UNEXPECTED, RvaSharedPath() != 123);
+		auto child = [&](const wchar_t* filename)
+		{
+			const auto code = Tools::RunProcess(path.parent_path() / filename,
+			    {L"ChildProcess", L"--rva-aggregate", L"chain"});
+			THROW_HR_IF_MSG(E_UNEXPECTED, code != 0, "Process-chain child failed: %ls", filename);
+		};
+		using namespace TestCoverageSharedLib;
+		if (name == L"chain-root.exe")
+		{
+			THROW_HR_IF(E_UNEXPECTED, RvaChainRootPath() != 17001);
+			child(L"chain-match-a.exe");
+			child(L"chain-match-b.exe");
+			child(L"chain-middle.exe");
+			child(L"chain-match-excluded.exe");
+		}
+		else if (name == L"chain-middle.exe")
+		{
+			THROW_HR_IF(E_UNEXPECTED, RvaChainMiddlePath() != 17002);
+			child(L"chain-match-grandchild.exe");
+		}
+		else if (name == L"chain-match-a.exe")
+			THROW_HR_IF(E_UNEXPECTED, RvaChainChildAPath() != 17003);
+		else if (name == L"chain-match-b.exe")
+			THROW_HR_IF(E_UNEXPECTED, RvaChainChildBPath() != 17004);
+		else if (name == L"chain-match-grandchild.exe")
+			THROW_HR_IF(E_UNEXPECTED, RvaChainGrandchildPath() != 17005);
+		else if (name == L"chain-match-excluded.exe")
+			THROW_HR_IF(E_UNEXPECTED, RvaChainExcludedPath() != 17006);
+		else
+			THROW_HR_MSG(E_INVALIDARG, "Unknown process-chain fixture: %ls", name.c_str());
 	}
 
 	void FreshCode()
@@ -147,6 +195,12 @@ namespace TestCoverageConsole
 	{
 		THROW_HR_IF(E_INVALIDARG, argc < 4);
 		const std::wstring mode{argv[3]};
+		if (mode == L"chain")
+		{
+			THROW_HR_IF(E_INVALIDARG, argc != 4);
+			ProcessChain();
+			return;
+		}
 		if (mode == L"fresh")
 		{
 			THROW_HR_IF(E_INVALIDARG, argc != 4);

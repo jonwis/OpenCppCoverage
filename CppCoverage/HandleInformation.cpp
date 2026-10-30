@@ -18,6 +18,7 @@
 #include "HandleInformation.hpp"
 
 #include <Psapi.h>
+#include <wil/result.h>
 #include <boost/algorithm/string.hpp>
 #include "CppCoverageException.hpp"
 #include "Handle.hpp"
@@ -121,6 +122,24 @@ namespace CppCoverage
 
 	//-------------------------------------------------------------------------
 	HandleInformation::HandleInformation() = default;
+
+	std::wstring HandleInformation::ComputeProcessFilename(HANDLE process) const
+	{
+		std::wstring path(512, L'\0');
+		for (;;)
+		{
+			auto size = static_cast<DWORD>(path.size());
+			if (QueryFullProcessImageNameW(process, 0, path.data(), &size))
+			{
+				path.resize(size);
+				return path;
+			}
+			const auto error = GetLastError();
+			THROW_WIN32_IF_MSG(error, error != ERROR_INSUFFICIENT_BUFFER || path.size() >= 32768,
+			    "Querying the debugged process main image path");
+			path.resize((std::min)(path.size() * 2, size_t{32768}));
+		}
+	}
 
 	//-------------------------------------------------------------------------
 	std::wstring HandleInformation::ComputeFilename(HANDLE hfile) const

@@ -23,6 +23,12 @@ namespace TestCoverageSharedLib
 	__declspec(dllexport) std::filesystem::path GetMainCppPath();
 	__declspec(dllexport) std::filesystem::path GetOutputBinaryPath();
 	__declspec(dllexport) bool IsOdd(int n);
+	__declspec(dllexport) __declspec(noinline) int RvaChainRootPath();
+	__declspec(dllexport) __declspec(noinline) int RvaChainMiddlePath();
+	__declspec(dllexport) __declspec(noinline) int RvaChainChildAPath();
+	__declspec(dllexport) __declspec(noinline) int RvaChainChildBPath();
+	__declspec(dllexport) __declspec(noinline) int RvaChainGrandchildPath();
+	__declspec(dllexport) __declspec(noinline) int RvaChainExcludedPath();
 
 	__declspec(dllexport) void CallSharedFunctionFromSharedLib();
 

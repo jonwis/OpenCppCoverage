@@ -186,6 +186,16 @@ namespace CppCoverage
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
 		    read != current.size() || current != original,
 		    "Code changed before range breakpoint write");
+#if defined(_M_ARM64) && !defined(_M_ARM64EC)
+		// Emulated AMD64 DLLs can retain translated code after a range write.
+		if (std::any_of(patches.begin(), patches.end(), [](const auto* patch)
+		    { return patch->instructionSet_ == InstructionSet::Amd64; }))
+		{
+			for (const auto* patch : patches)
+				patch->Install();
+			return;
+		}
+#endif
 		Write(process, address, modified.data(), modified.size());
 	}
 

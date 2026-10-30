@@ -50,6 +50,8 @@ namespace CppCoverage
 
 		const Patterns& GetModulePatterns() const;
 		const Patterns& GetSourcePatterns() const;
+		void SetProcessPatterns(const Patterns& patterns) { processPatterns_ = patterns; }
+		const boost::optional<Patterns>& GetProcessPatterns() const { return processPatterns_; }
 		const StartInfo* GetStartInfo() const;
 		void EnableSymbolFreeMode() { symbolFree_ = true; }
 		bool IsSymbolFreeModeEnabled() const { return symbolFree_; }
@@ -103,6 +105,7 @@ namespace CppCoverage
 	private:
 		Patterns modules_;
 		Patterns sources_;
+		boost::optional<Patterns> processPatterns_;
 		boost::optional<StartInfo> optionalStartInfo_;
 		bool symbolFree_ = false;
 		boost::optional<std::filesystem::path> resolvePath_;

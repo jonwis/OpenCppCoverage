@@ -29,6 +29,8 @@ namespace CppCoverage
 	public:
 		static const std::string SelectedModulesOption;
 		static const std::string ExcludedModulesOption;
+		static const std::string SelectedProcessesOption;
+		static const std::string ExcludedProcessesOption;
 		static const std::string SelectedSourcesOption;
 		static const std::string ExcludedSourcesOption;
 		static const std::string VerboseOption;

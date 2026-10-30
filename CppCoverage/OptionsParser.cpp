@@ -455,6 +455,22 @@ namespace CppCoverage
 
 		if (variablesMap.IsOptionSelected(ProgramOptions::SymbolFreeOption))
 			options.EnableSymbolFreeMode();
+		if (!variablesMap.GetVariablesMap().at(ProgramOptions::SelectedProcessesOption).defaulted() ||
+		    variablesMap.IsOptionSelected(ProgramOptions::ExcludedProcessesOption))
+		{
+			if (!options.IsSymbolFreeModeEnabled() || !options.GetStartInfo())
+				throw Plugin::OptionsParserException(
+				    "--processes and --excluded_processes require --symbol-free with a launched program. Running-process attachment is not supported.");
+			const auto patterns = GetPatterns(variablesMap,
+			    ProgramOptions::SelectedProcessesOption, ProgramOptions::ExcludedProcessesOption);
+			for (const auto* list : {&patterns.GetSelectedPatterns(), &patterns.GetExcludedPatterns()})
+				for (const auto& pattern : *list)
+					if (pattern.empty() ||
+					    (pattern.find(L':') != std::wstring::npos && pattern.find(L'\\') == std::wstring::npos))
+						throw Plugin::OptionsParserException(
+						    "Process globs must be nonempty basenames or Windows path patterns containing '\\'.");
+			options.SetProcessPatterns(patterns);
+		}
 		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::ResolveOption))
 		{
 			if (!fs::is_regular_file(*path))

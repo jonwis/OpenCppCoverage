@@ -135,6 +135,33 @@ loader function-override values. Blocks already covered are left uninstrumented;
 breakpoints in resident instances are retired at that process's next stopped
 debug event. Queued breakpoint exceptions remain recognized.
 
+#### Select contributors in a launched process tree
+
+`--processes` and `--excluded_processes` select main executables independently
+of `--modules` and `--excluded_modules`. They currently require `--symbol-free`
+and a launched program; attaching to running processes and monitoring unrelated
+future launches are not implemented.
+
+```powershell
+.\OpenCppCoverage.exe --symbol-free --cover_children --processes 'te.processhost*' --processes '*notepad*' --excluded_processes '*helper*' --modules shcore.dll --modules MyLibrary.dll -- .\TestLauncher.exe
+```
+
+`--cover_children` remains explicit. Unselected roots and intermediaries stay
+under debugger control so matching children and grandchildren can contribute.
+Their main images and DLLs are not instrumented for coverage. A selected process
+can load a matching DLL later; selecting a DLL never implicitly selects its host.
+Without `--cover_children`, only the launched root is eligible for coverage.
+
+Repeated includes are ORed; any exclusion wins. Includes default to `*`, including
+when only exclusions are supplied. Without process filters, launch behavior is
+unchanged. Process globs match the entire basename unless they contain `\`, in
+which case they match the queried full Win32 main-image path. Matching is ordinal
+case-insensitive; `*` is the only wildcard and `?` is literal. `svchost.exe` is an
+exact basename, while `*system32\runtimebroker*` is a path glob. Extended DOS/UNC
+prefixes are normalized for comparison; environment variables and path aliases
+are not expanded. Existing module filters retain their substring semantics.
+Process filters can also be repeated in configuration files.
+
 On a machine with matching binaries and PDBs:
 
 ```powershell

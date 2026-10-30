@@ -17,6 +17,8 @@
 #pragma once
 
 #include <vector>
+#include <boost/optional.hpp>
+#include "Patterns.hpp"
 #include "StartInfo.hpp"
 #include "UnifiedDiffSettings.hpp"
 #include "CoverageFilterSettings.hpp"
@@ -40,6 +42,8 @@ namespace CppCoverage
 		RunCoverageSettings& operator=(const RunCoverageSettings&) = delete;
 
 		void SetCoverChildren(bool);
+		void SetProcessPatterns(const Patterns& patterns) { processPatterns_ = patterns; }
+		const boost::optional<Patterns>& GetProcessPatterns() const { return processPatterns_; }
 		void SetContinueAfterCppException(bool);
         void SetStopOnAssert(bool);
         void SetMaxUnmatchPathsForWarning(size_t);
@@ -58,6 +62,7 @@ namespace CppCoverage
 
 	private:
 		StartInfo startInfo_;
+		boost::optional<Patterns> processPatterns_;
 		CoverageFilterSettings coverageFilterSettings_;
 		std::vector<UnifiedDiffSettings> unifiedDiffSettings_;
 		bool coverChildren_;

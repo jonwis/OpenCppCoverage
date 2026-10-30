@@ -27,6 +27,7 @@ namespace CppCoverage
 	public:
 		HandleInformation();
 		std::wstring ComputeFilename(HANDLE hfile) const;
+		std::wstring ComputeProcessFilename(HANDLE process) const;
 
 	private:
 		HandleInformation(const HandleInformation&) = delete;

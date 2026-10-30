@@ -340,6 +340,8 @@
     <ClInclude Include="RvaCoverage.hpp" />
     <ClInclude Include="RvaCoverageResolver.hpp" />
     <ClInclude Include="RvaCoverageRunner.hpp" />
+    <ClInclude Include="ProcessFilter.hpp" />
+    <ClCompile Include="ProcessFilter.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="PeImage.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="BasicBlockDiscovery.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="ArchitectureBreakpoint.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>

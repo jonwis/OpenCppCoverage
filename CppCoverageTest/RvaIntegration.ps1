@@ -145,4 +145,82 @@ if ($ConsoleFixture) {
     if (!$reloadReport.SelectNodes("//line[@number='$line' and @hits='1']").Count) {
         throw 'The reloaded DLL export was not covered.'
     }
+
+    $chainDirectory = Join-Path $OutputDirectory 'chain-fixtures'
+    $null = New-Item -ItemType Directory -Force -Path $chainDirectory
+    $consoleDirectory = Split-Path -Parent $ConsoleFixture
+    Get-ChildItem -LiteralPath $consoleDirectory -Filter '*.dll' |
+        Copy-Item -Destination $chainDirectory -Force
+    foreach ($name in 'chain-root', 'chain-middle', 'chain-match-a', 'chain-match-b',
+                       'chain-match-grandchild', 'chain-match-excluded') {
+        Copy-Item -LiteralPath $ConsoleFixture -Destination (Join-Path $chainDirectory "$name.exe") -Force
+    }
+    $chainConfig = Join-Path $chainDirectory 'processes.cfg'
+    [IO.File]::WriteAllText($chainConfig, "processes=chain-match-a.exe`r`nprocesses=chain-match-b.exe`r`nexcluded_processes=chain-match-excluded.exe`r`n")
+    $chainCases = @(
+        @{ Name = 'config'; Children = $true; Hits = @(17003, 17004, 17005)
+           Filters = @('--config_file', $chainConfig, '--processes', '*\chain-match-grandchild.exe',
+                       '--processes', 'chain-match-excluded.exe') },
+        @{ Name = 'glob'; Children = $true; Hits = @(17003, 17004, 17005)
+           Filters = @('--processes', 'CHAIN-MATCH-*.EXE', '--excluded_processes', '*excluded*') },
+        # Reuse the same image files: warmed emulated DLLs must still trap.
+        @{ Name = 'glob-repeat'; Children = $true; Hits = @(17003, 17004, 17005)
+           Filters = @('--processes', 'CHAIN-MATCH-*.EXE', '--excluded_processes', '*excluded*') },
+        @{ Name = 'excludes-only'; Children = $true; Hits = @(17001, 17002, 17003, 17004, 17005)
+           Filters = @('--excluded_processes', '*excluded*') },
+        @{ Name = 'unfiltered'; Children = $true; Hits = @(17001, 17002, 17003, 17004, 17005, 17006)
+           Filters = @() },
+        @{ Name = 'root-only'; Children = $false; Hits = @(17001)
+           Filters = @() }
+    )
+    $chainSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\TestCoverageSharedLib\TestCoverageSharedLib.cpp')
+    $sharedPdb = Join-Path $consoleDirectory 'TestCoverageSharedLib.pdb'
+    $copiedPdb = Join-Path $chainDirectory 'TestCoverageSharedLib.pdb'
+    foreach ($case in $chainCases) {
+        $chainRaw = Join-Path $OutputDirectory "chain-$($case.Name).cov"
+        $chainXml = Join-Path $OutputDirectory "chain-$($case.Name).xml"
+        $chainLog = Join-Path $OutputDirectory "chain-$($case.Name).log"
+        if (Test-Path -LiteralPath $copiedPdb) { Remove-Item -LiteralPath $copiedPdb }
+        $arguments = @('--verbose', '--symbol-free', '--modules', 'chain-*.exe',
+                       '--modules', 'TestCoverageSharedLib.dll', '--export_type', "binary:$chainRaw")
+        if ($case.Children) { $arguments += '--cover_children' }
+        $arguments += $case.Filters
+        $pdbLocks = @()
+        try {
+            # Embedded original PDB paths are inaccessible as well as adjacent copies.
+            foreach ($originalPdb in [IO.Path]::ChangeExtension($ConsoleFixture, '.pdb'), $sharedPdb) {
+                $pdbLocks += [IO.File]::Open($originalPdb, [IO.FileMode]::Open,
+                                           [IO.FileAccess]::Read, [IO.FileShare]::None)
+            }
+            & $Tool @arguments -- (Join-Path $chainDirectory 'chain-root.exe') ChildProcess --rva-aggregate chain *> $chainLog
+            if ($LASTEXITCODE -ne 0) { throw "Process-chain collection failed: $($case.Name) (see $chainLog)" }
+        }
+        finally {
+            foreach ($pdbLock in $pdbLocks) { $pdbLock.Dispose() }
+        }
+        $diagnostics = Get-Content -LiteralPath $chainLog -Raw
+        if ($case.Name -in 'config', 'glob', 'glob-repeat') {
+            foreach ($unselected in 'chain-root', 'chain-middle', 'chain-match-excluded') {
+                if ($diagnostics -notmatch "$unselected.exe main_trap=false") {
+                    throw "An unselected main image was instrumented or never ran: $unselected"
+                }
+            }
+            if ($diagnostics -notmatch 'chain-match-a.exe main_trap=true' -or
+                $diagnostics -notmatch 'module=TestCoverageSharedLib\.dll[^\r\n]*discovery_cached=true') {
+                throw 'Selected children did not install and reuse shared-image discovery.'
+            }
+        }
+        Copy-Item -LiteralPath $sharedPdb -Destination $copiedPdb
+        & $Tool --resolve $chainRaw --sources '*TestCoverageSharedLib.cpp' --export_type "cobertura:$chainXml"
+        if ($LASTEXITCODE -ne 0) { throw "Process-chain resolution failed: $($case.Name)" }
+        [xml]$chainReport = Get-Content -LiteralPath $chainXml -Raw
+        foreach ($value in 17001..17006) {
+            $line = ($chainSource | Select-String -SimpleMatch "return $value;").LineNumber
+            $hits = [int]($value -in $case.Hits)
+            if (!$line -or !$chainReport.SelectNodes("//class[contains(@filename,'TestCoverageSharedLib.cpp')]/lines/line[@number='$line' and @hits='$hits']").Count) {
+                throw "Incorrect process-chain coverage: $($case.Name), return $value, expected hits=$hits"
+            }
+        }
+        Write-Output "Process-chain case passed: $($case.Name)"
+    }
 }
