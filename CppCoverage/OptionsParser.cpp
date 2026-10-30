@@ -458,9 +458,9 @@ namespace CppCoverage
 		if (!variablesMap.GetVariablesMap().at(ProgramOptions::SelectedProcessesOption).defaulted() ||
 		    variablesMap.IsOptionSelected(ProgramOptions::ExcludedProcessesOption))
 		{
-			if (!options.IsSymbolFreeModeEnabled() || !options.GetStartInfo())
+			if (!options.IsSymbolFreeModeEnabled())
 				throw Plugin::OptionsParserException(
-				    "--processes and --excluded_processes require --symbol-free with a launched program. Running-process attachment is not supported.");
+				    "--processes and --excluded_processes require --symbol-free.");
 			const auto patterns = GetPatterns(variablesMap,
 			    ProgramOptions::SelectedProcessesOption, ProgramOptions::ExcludedProcessesOption);
 			for (const auto* list : {&patterns.GetSelectedPatterns(), &patterns.GetExcludedPatterns()})
@@ -470,6 +470,12 @@ namespace CppCoverage
 						throw Plugin::OptionsParserException(
 						    "Process globs must be nonempty basenames or Windows path patterns containing '\\'.");
 			options.SetProcessPatterns(patterns);
+		}
+		if (const auto* duration = variablesMap.GetOptionalValue<int>(ProgramOptions::DurationOption))
+		{
+			if (*duration <= 0)
+				throw Plugin::OptionsParserException("--duration must be positive whole seconds.");
+			options.SetDuration(static_cast<uint32_t>(*duration));
 		}
 		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::ResolveOption))
 		{
@@ -487,8 +493,24 @@ namespace CppCoverage
 			}
 		}
 		if (options.IsSymbolFreeModeEnabled() &&
-			(!options.GetStartInfo() || options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
-			throw Plugin::OptionsParserException("--symbol-free requires a program and cannot be combined with --resolve or --input_coverage.");
+			(options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
+			throw Plugin::OptionsParserException("--symbol-free cannot be combined with --resolve or --input_coverage.");
+		const bool external = options.IsSymbolFreeModeEnabled() && !options.GetStartInfo();
+		if (external)
+		{
+			const auto& values = variablesMap.GetVariablesMap();
+			if (values.at(ProgramOptions::SelectedProcessesOption).defaulted() ||
+			    values.at(ProgramOptions::SelectedModulesOption).defaulted() || !options.GetDuration())
+				throw Plugin::OptionsParserException(
+				    "Existing-process collection requires explicit --processes, --modules and a positive --duration.");
+			if (options.IsCoverChildrenModeEnabled() || options.IsStopOnAssertModeEnabled() ||
+			    options.IsContinueAfterCppExceptionModeEnabled() || options.IsPlugingModeEnabled() ||
+			    variablesMap.IsOptionSelected(ProgramOptions::WorkingDirectoryOption))
+				throw Plugin::OptionsParserException(
+				    "Existing-process collection does not support --cover_children, launch working directories, plugin prompts or exception-swallowing options.");
+		}
+		if (options.GetDuration() && !external)
+			throw Plugin::OptionsParserException("--duration applies only to existing-process collection without a launched program.");
 		if (options.GetResolvePath() && (options.GetStartInfo() || !options.GetInputCoveragePaths().empty()))
 			throw Plugin::OptionsParserException("--resolve cannot be combined with a program or --input_coverage.");
 		if (!options.GetModuleDirectories().empty() && !options.GetResolvePath())
@@ -506,7 +528,7 @@ namespace CppCoverage
 		if (options.GetResolvePath() && options.IsOptimizedBuildSupportEnabled())
 			throw Plugin::OptionsParserException("--optimized_build applies to symbol-based collection.");
 
-		if (!options.GetStartInfo() && options.GetInputCoveragePaths().empty() && !options.GetResolvePath())
+		if (!external && !options.GetStartInfo() && options.GetInputCoveragePaths().empty() && !options.GetResolvePath())
 			throw Plugin::OptionsParserException(
 			    "You must specify a program to execute or use --" +
 			    ProgramOptions::InputCoverageValue);

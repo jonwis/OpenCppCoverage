@@ -138,9 +138,8 @@ debug event. Queued breakpoint exceptions remain recognized.
 #### Select contributors in a launched process tree
 
 `--processes` and `--excluded_processes` select main executables independently
-of `--modules` and `--excluded_modules`. They currently require `--symbol-free`
-and a launched program; attaching to running processes and monitoring unrelated
-future launches are not implemented.
+of `--modules` and `--excluded_modules`. They require `--symbol-free` and support
+both launched programs and the fixed existing-process cohort described below.
 
 ```powershell
 .\OpenCppCoverage.exe --symbol-free --cover_children --processes 'te.processhost*' --processes '*notepad*' --excluded_processes '*helper*' --modules shcore.dll --modules MyLibrary.dll -- .\TestLauncher.exe
@@ -161,6 +160,52 @@ exact basename, while `*system32\runtimebroker*` is a path glob. Extended DOS/UN
 prefixes are normalized for comparison; environment variables and path aliases
 are not expanded. Existing module filters retain their substring semantics.
 Process filters can also be repeated in configuration files.
+
+#### Collect from existing processes
+
+Omit the launched program and supply explicit `--processes`, `--modules`, and
+a positive `--duration` in whole seconds:
+
+```powershell
+.\OpenCppCoverage.exe --symbol-free --processes 'MyHost*.exe' --processes 'C:\Tests\OtherHost.exe' --excluded_processes '*helper*' --modules MyLibrary.dll --modules OtherLibrary.dll --duration 30 --export_type binary:existing.cov
+```
+
+The initial process snapshot defines the cohort. All eligible matching instances
+are considered, including unrelated processes. The collector verifies each
+process's creation time and main-image path before admission. A selected process
+remains attached when no matching DLL is loaded yet; later DLL loads can contribute.
+Hits from identical images are unioned as in launched collection. The raw format
+and deferred-resolution workflow are unchanged.
+
+`--duration` starts after cohort admission and bootstrap. Ctrl+C requests an
+orderly early stop. External processes are never terminated by these stop paths.
+Cleanup holds live threads, restores original bytes and page protections, repairs
+queued coverage traps, detaches, and releases only the collector's suspensions.
+If cleanup fails, the collector retains debugger ownership and retries with an
+error diagnostic; cleanup can exceed the requested duration.
+Ambiguous attach-bootstrap exceptions retain the connection for recovery rather
+than being swallowed as collector-owned breakpoints.
+Application exceptions and breakpoints on known original threads retain normal
+target dispatch during bootstrap.
+
+Attachment is invasive: it pauses threads and changes executable memory.
+An owned helper establishes the debugger's non-killing exit policy before any
+external attachment. This does not make collector crashes safe: outstanding
+software breakpoints can remain in external processes. Use controlled targets
+and allow orderly cleanup; do not forcibly end the collector.
+
+Collection observes execution after attachment. Earlier execution, startup code,
+and DLL initialization that already ran are not recovered. Future process
+launches and children outside the initial cohort are not monitored;
+`--cover_children` is rejected in existing-process mode. Use controlled launch
+when coverage must begin before application entry.
+
+The collector does not elevate or enable debug privileges. It refuses critical
+processes, processes whose critical status cannot be established, already-debugged
+processes, and unsupported architectures. Admission failures are logged and give
+a nonzero result even when other targets contribute. Inaccessible candidates
+whose main-image paths cannot be checked are reported as incomplete admissions.
+An empty eligible cohort also returns a nonzero result.
 
 On a machine with matching binaries and PDBs:
 

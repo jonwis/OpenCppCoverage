@@ -156,6 +156,14 @@ namespace CppCoverage
 	}
 	
 	//-------------------------------------------------------------------------
+	DWORD Debugger::DispatchExternalEvent(
+	    const DEBUG_EVENT& event, IDebugEventsHandler& handler)
+	{
+		const auto result = HandleDebugEvent(event, handler);
+		return boost::get_optional_value_or(result.continueStatus_, DWORD{DBG_CONTINUE});
+	}
+
+	//-------------------------------------------------------------------------
 	Debugger::ProcessStatus Debugger::HandleDebugEvent(
 		const DEBUG_EVENT& debugEvent,
 		IDebugEventsHandler& debugEventsHandler)
@@ -235,6 +243,8 @@ namespace CppCoverage
 	{
 		const auto& exception = debugEvent.u.Exception;
 		auto exceptionType = debugEventsHandler.OnException(hProcess, hThread, exception);
+		if (external_ && exceptionType != IDebugEventsHandler::ExceptionType::BreakPoint)
+			return ProcessStatus{boost::none, DBG_EXCEPTION_NOT_HANDLED};
 
 		switch (exceptionType)
 		{

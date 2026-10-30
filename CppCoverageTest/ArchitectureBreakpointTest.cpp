@@ -4,8 +4,12 @@
 #include <wil/resource.h>
 
 #include "CppCoverage/ArchitectureBreakpoint.hpp"
+#include "CppCoverage/BreakpointJournal.hpp"
+#include "CppCoverage/ThreadSuspension.hpp"
 
 #include <array>
+#include <atomic>
+#include <thread>
 #include <cstring>
 #include <stdexcept>
 #include <vector>
@@ -16,6 +20,9 @@ namespace CppCoverageTest
 	{
 		using CppCoverage::ArchitectureBreakpoint;
 		using CppCoverage::InstructionSet;
+		bool failJournalRestore = false;
+		int failedProtectionRestores = 0;
+		int failedCacheFlushes = 0;
 
 		class CodePage
 		{
@@ -247,5 +254,168 @@ namespace CppCoverageTest
 		ASSERT_NE(0u, VirtualQuery(page.data, &memory, sizeof(memory)));
 		EXPECT_EQ(PAGE_EXECUTE_READ, memory.Protect);
 		EXPECT_EQ(0x90, page.data[0]);
+	}
+
+	TEST(ArchitectureBreakpointTest, JournalRollsBackPartialArm64WriteAndProtection)
+	{
+		CodePage page;
+		DWORD previous = 0;
+		ASSERT_TRUE(VirtualProtect(page.data, 4096, PAGE_EXECUTE_READ, &previous));
+		CppCoverage::BreakpointJournal::Operations operations;
+		operations.write = [](HANDLE process, LPVOID address, LPCVOID bytes,
+		                      SIZE_T size, SIZE_T* count) -> BOOL {
+			if (size == 4 && *static_cast<const uint8_t*>(bytes) == 0)
+			{
+				WriteProcessMemory(process, address, bytes, 2, count);
+				SetLastError(ERROR_PARTIAL_COPY);
+				return FALSE;
+			}
+			return WriteProcessMemory(process, address, bytes, size, count);
+		};
+		CppCoverage::BreakpointJournal journal{GetCurrentProcess(), operations};
+		const std::array<uint8_t, 4> trap{{0, 0, 0x3e, 0xd4}};
+		EXPECT_THROW(journal.Write(page.Address(), trap.data(), trap.size()), wil::ResultException);
+		EXPECT_FALSE(journal.Empty());
+		EXPECT_EQ(0, page.data[0]);
+		EXPECT_EQ(0x90, page.data[2]);
+		EXPECT_NO_THROW(journal.Rollback());
+		EXPECT_TRUE(journal.Empty());
+		for (size_t i = 0; i < 4; ++i)
+			EXPECT_EQ(0x90, page.data[i]);
+		MEMORY_BASIC_INFORMATION memory{};
+		ASSERT_NE(0u, VirtualQuery(page.data, &memory, sizeof(memory)));
+		EXPECT_EQ(PAGE_EXECUTE_READ, memory.Protect);
+	}
+
+	TEST(ArchitectureBreakpointTest, JournalRetainsFailedCleanupAndRejectsForeignBytes)
+	{
+		CodePage page;
+		failJournalRestore = true;
+		CppCoverage::BreakpointJournal::Operations operations;
+		operations.write = [](HANDLE process, LPVOID address, LPCVOID bytes,
+		                      SIZE_T size, SIZE_T* count) -> BOOL {
+			if (*static_cast<const uint8_t*>(bytes) == 0x90 && failJournalRestore)
+			{
+				failJournalRestore = false;
+				SetLastError(ERROR_ACCESS_DENIED);
+				return FALSE;
+			}
+			return WriteProcessMemory(process, address, bytes, size, count);
+		};
+		CppCoverage::BreakpointJournal journal{GetCurrentProcess(), operations};
+		const uint8_t trap = 0xcc;
+		journal.Write(page.Address(), &trap, 1);
+		EXPECT_THROW(journal.Rollback(), wil::ResultException);
+		EXPECT_FALSE(journal.Empty());
+		EXPECT_EQ(trap, page.data[0]);
+		page.data[0] = 0xc3;
+		EXPECT_THROW(journal.Rollback(), wil::ResultException);
+		EXPECT_FALSE(journal.Empty());
+		EXPECT_EQ(0xc3, page.data[0]);
+		page.data[0] = trap;
+		EXPECT_NO_THROW(journal.Rollback());
+		EXPECT_EQ(0x90, page.data[0]);
+		EXPECT_TRUE(journal.Empty());
+	}
+
+	TEST(ArchitectureBreakpointTest, JournalRetriesFailedProtectionRestoration)
+	{
+		CodePage page;
+		DWORD previous = 0;
+		ASSERT_TRUE(VirtualProtect(page.data, 4096, PAGE_EXECUTE_READ, &previous));
+		failedProtectionRestores = 2;
+		CppCoverage::BreakpointJournal::Operations operations;
+		operations.protect = [](HANDLE process, LPVOID address, SIZE_T size,
+		                        DWORD protection, PDWORD previous) -> BOOL {
+			if ((protection & ~PAGE_TARGETS_NO_UPDATE) == PAGE_EXECUTE_READ &&
+			    failedProtectionRestores)
+			{
+				--failedProtectionRestores;
+				SetLastError(ERROR_ACCESS_DENIED);
+				return FALSE;
+			}
+			return VirtualProtectEx(process, address, size, protection, previous);
+		};
+		CppCoverage::BreakpointJournal journal{GetCurrentProcess(), operations};
+		const uint8_t trap = 0xcc;
+		EXPECT_THROW(journal.Write(page.Address(), &trap, 1), wil::ResultException);
+		EXPECT_FALSE(journal.Empty());
+		MEMORY_BASIC_INFORMATION memory{};
+		ASSERT_NE(0u, VirtualQuery(page.data, &memory, sizeof(memory)));
+		EXPECT_EQ(PAGE_EXECUTE_READWRITE, memory.Protect);
+		EXPECT_NO_THROW(journal.Rollback());
+		EXPECT_EQ(0x90, page.data[0]);
+		ASSERT_NE(0u, VirtualQuery(page.data, &memory, sizeof(memory)));
+		EXPECT_EQ(PAGE_EXECUTE_READ, memory.Protect);
+	}
+
+	TEST(ArchitectureBreakpointTest, JournalRetirementAndUnloadPreserveOriginalImage)
+	{
+		CodePage page;
+		CppCoverage::BreakpointJournal journal{GetCurrentProcess()};
+		const uint8_t trap = 0xcc;
+		const uint8_t original = 0x90;
+		journal.Write(page.Address(), &trap, 1);
+		journal.Write(page.Address(), &original, 1);
+		journal.Write(page.Address(1), &trap, 1);
+		journal.ForgetUnloadedRange(page.Address(1), 1);
+		journal.Rollback();
+		EXPECT_EQ(original, page.data[0]);
+		EXPECT_EQ(trap, page.data[1]);
+		EXPECT_TRUE(journal.Empty());
+	}
+
+	TEST(ArchitectureBreakpointTest, JournalRetriesFailedInstructionCacheFlush)
+	{
+		CodePage page;
+		failedCacheFlushes = 1;
+		CppCoverage::BreakpointJournal::Operations operations;
+		operations.flush = [](HANDLE process, LPCVOID address, SIZE_T size) -> BOOL {
+			if (failedCacheFlushes)
+			{
+				--failedCacheFlushes;
+				SetLastError(ERROR_ACCESS_DENIED);
+				return FALSE;
+			}
+			return FlushInstructionCache(process, address, size);
+		};
+		CppCoverage::BreakpointJournal journal{GetCurrentProcess(), operations};
+		const uint8_t trap = 0xcc;
+		EXPECT_THROW(journal.Write(page.Address(), &trap, 1), wil::ResultException);
+		EXPECT_EQ(trap, page.data[0]);
+		EXPECT_FALSE(journal.Empty());
+		EXPECT_NO_THROW(journal.Rollback());
+		EXPECT_EQ(0x90, page.data[0]);
+		EXPECT_TRUE(journal.Empty());
+	}
+
+	TEST(ArchitectureBreakpointTest, OwnedSuspensionFencesAndPreservesAnotherSuspendCount)
+	{
+		std::atomic<bool> stop{false};
+		std::atomic<uint64_t> counter{0};
+		std::thread worker{[&] {
+			while (!stop.load())
+				++counter;
+		}};
+		CppCoverage::ThreadSuspension held;
+		bool otherHeld = false;
+		auto cleanup = wil::scope_exit([&] {
+			held.Resume();
+			if (otherHeld)
+				ResumeThread(worker.native_handle());
+			stop.store(true);
+			worker.join();
+		});
+		ASSERT_EQ(0u, SuspendThread(worker.native_handle()));
+		otherHeld = true;
+		held.Hold(worker.native_handle());
+		held.Hold(worker.native_handle());
+		const auto before = counter.load();
+		for (size_t i = 0; i < 100; ++i)
+			SwitchToThread();
+		EXPECT_EQ(before, counter.load());
+		held.Resume();
+		EXPECT_EQ(1u, ResumeThread(worker.native_handle()));
+		otherHeld = false;
 	}
 }

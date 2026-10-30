@@ -62,14 +62,15 @@ namespace CppCoverage
 
 			options.add_options()
 				(ProgramOptions::SymbolFreeOption.c_str(), "Collect basic-block RVA coverage without loading symbols. Only binary export is supported.")
+				(ProgramOptions::DurationOption.c_str(), po::value<int>(), "Existing-process collection duration in positive whole seconds. Ctrl+C requests an orderly early detach.")
 				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
 				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Search directory for matching images during --resolve. Can have multiple occurrences.")
 				(ProgramOptions::SelectedProcessesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
-				"Main executable glob for symbol-free launch coverage. Basename unless the glob contains '\\'. Defaults to all processes; --cover_children is still required for descendants. Can have multiple occurrences.")
+				"Main executable glob for symbol-free coverage. Basename unless the glob contains '\\'. Explicit selectors are required without a launched program; launch descendants require --cover_children. Can have multiple occurrences.")
 				(ProgramOptions::ExcludedProcessesOption.c_str(),
 				po::value<T_Strings>()->composing(),
-				"Exclude main executable globs from symbol-free launch coverage. Exclusions win. Can have multiple occurrences.")
+				"Exclude main executable globs from symbol-free coverage. Exclusions win. Can have multiple occurrences.")
 				(ProgramOptions::SelectedModulesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
 				"The pattern that module's paths should match. Can have multiple occurrences.")
@@ -140,6 +141,7 @@ namespace CppCoverage
 	const std::string ProgramOptions::ExcludedLineRegexOption = "excluded_line_regex";
 	const std::string ProgramOptions::SubstitutePdbSourcePathOption = "substitute_pdb_source_path";
 	const std::string ProgramOptions::SymbolFreeOption = "symbol-free";
+	const std::string ProgramOptions::DurationOption = "duration";
 	const std::string ProgramOptions::ResolveOption = "resolve";
 	const std::string ProgramOptions::ModuleDirectoryOption = "module_dir";
     const std::string ProgramOptions::StopOnAssertOption = "stop_on_assert";

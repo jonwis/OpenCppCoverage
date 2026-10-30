@@ -24,6 +24,31 @@
 
 namespace fs = std::filesystem;
 
+namespace
+{
+	HANDLE loaderEntered = nullptr;
+	HANDLE loaderRelease = nullptr;
+}
+
+extern "C" __declspec(dllexport) void RvaHoldThreadAttach(HANDLE entered, HANDLE release)
+{
+	loaderEntered = entered;
+	loaderRelease = release;
+}
+
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+{
+	if (reason == DLL_THREAD_ATTACH && loaderEntered)
+	{
+		const auto entered = loaderEntered;
+		const auto release = loaderRelease;
+		loaderEntered = loaderRelease = nullptr;
+		SetEvent(entered);
+		return WaitForSingleObject(release, 120000) == WAIT_OBJECT_0;
+	}
+	return TRUE;
+}
+
 namespace TestCoverageSharedLib
 {
 	//-------------------------------------------------------------------------

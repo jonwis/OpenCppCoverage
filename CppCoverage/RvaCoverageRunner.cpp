@@ -16,6 +16,7 @@
 #include <wil/resource.h>
 
 #include "ArchitectureBreakpoint.hpp"
+#include "BreakpointJournal.hpp"
 #include "BasicBlockDiscovery.hpp"
 #include "CoverageFilterManager.hpp"
 #include "Debugger.hpp"
@@ -321,6 +322,10 @@ namespace CppCoverage
 			std::map<uint64_t, Loader> loaders;
 			bool startupBreakpointHandled = false;
 			bool selected = true;
+			bool bootstrap = false;
+			bool stopping = false;
+			std::unique_ptr<BreakpointJournal> journal;
+			std::map<uint64_t, wil::unique_handle> pendingModules;
 			size_t observedEpoch = 0;
 
 		};
@@ -332,6 +337,7 @@ namespace CppCoverage
 		std::map<DWORD, std::unique_ptr<Process>> processes;
 		std::vector<Aggregate> aggregates;
 		size_t hitEpoch = 0;
+		bool external = false;
 
 		void RecordHit(size_t aggregate, size_t index)
 		{
@@ -362,6 +368,20 @@ namespace CppCoverage
 
 	RvaCoverageRunner::RvaCoverageRunner() = default;
 	RvaCoverageRunner::~RvaCoverageRunner() = default;
+
+	RvaCoverage RvaCoverageRunner::CollectExisting(
+	    const CoverageFilterSettings& filters, const Patterns& processes, unsigned durationSeconds)
+	{
+		state_ = std::make_unique<State>();
+		state_->external = true;
+		state_->processFilter = std::make_unique<ProcessFilter>(processes);
+		state_->filter = std::make_unique<CoverageFilterManager>(
+		    filters, std::vector<UnifiedDiffSettings>{}, std::vector<std::wstring>{}, false);
+		state_->coverage.name = L"Existing processes";
+		Debugger debugger{false, false, false};
+		state_->coverage.exitCode = debugger.AttachExisting(processes, durationSeconds, *this);
+		return std::move(state_->coverage);
+	}
 
 	RvaCoverage RvaCoverageRunner::RunCoverage(const RunCoverageSettings& settings)
 	{
@@ -403,6 +423,9 @@ namespace CppCoverage
 			                     GetCurrentProcess(), process->handle.put(), 0,
 			                     FALSE, DUPLICATE_SAME_ACCESS), "Retaining debugged process handle");
 			process->initialThread = GetThreadId(info.hThread);
+			process->bootstrap = state_->external;
+			if (state_->external)
+				process->journal = std::make_unique<BreakpointJournal>(process->handle.get());
 			THROW_LAST_ERROR_IF_MSG(!process->initialThread, "Identifying initial debugged thread");
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !state_->processes.emplace(id, std::move(process)).second, "Duplicate live process identifier");
 			const auto image = ReadImage(
@@ -412,7 +435,7 @@ namespace CppCoverage
 		}
 		catch (...)
 		{
-			if (TerminateProcess(info.hProcess, ERROR_PROCESS_ABORTED))
+			if (!state_->external && TerminateProcess(info.hProcess, ERROR_PROCESS_ABORTED))
 				DebugActiveProcessStop(id);
 			throw;
 		}
@@ -422,6 +445,8 @@ namespace CppCoverage
 	    HANDLE process, HANDLE, const EXIT_PROCESS_DEBUG_INFO&)
 	{
 		state_->exceptions.OnExitProcess(process);
+		if (state_->external && !state_->processes.count(ProcessId(process)))
+			return;
 		for (const auto& module : state_->processes.at(ProcessId(process))->modules)
 			--state_->aggregates[module.second.aggregate].liveInstances;
 		state_->processes.erase(ProcessId(process));
@@ -438,9 +463,12 @@ namespace CppCoverage
 	{
 		auto& live = *state_->processes.at(ProcessId(process));
 		const auto base = reinterpret_cast<uint64_t>(info.lpBaseOfDll);
+		live.pendingModules.erase(base);
 		const auto module = live.modules.find(base);
 		if (module != live.modules.end())
 		{
+			if (live.journal)
+				live.journal->ForgetUnloadedRange(base, module->second.size);
 			--state_->aggregates[module->second.aggregate].liveInstances;
 			live.modules.erase(module);
 		}
@@ -449,13 +477,29 @@ namespace CppCoverage
 
 	void RvaCoverageRunner::LoadModule(HANDLE process, HANDLE file, void* baseAddress)
 	{
-		if (!file || file == INVALID_HANDLE_VALUE)
+		auto& live = *state_->processes.at(ProcessId(process));
+		if (live.stopping)
+			return;
+		if (live.bootstrap)
 		{
-			LOG_WARNING << "Skipping a module without a file handle in RVA collection";
+			wil::unique_handle retained;
+			if (file && file != INVALID_HANDLE_VALUE)
+				THROW_LAST_ERROR_IF(!DuplicateHandle(GetCurrentProcess(), file,
+				    GetCurrentProcess(), retained.put(), 0, FALSE, DUPLICATE_SAME_ACCESS));
+			live.pendingModules[reinterpret_cast<uint64_t>(baseAddress)] = std::move(retained);
 			return;
 		}
-		const std::filesystem::path path{HandleInformation{}.ComputeFilename(file)};
-		auto& live = *state_->processes.at(ProcessId(process));
+		if (!file || file == INVALID_HANDLE_VALUE)
+		{
+			if (!state_->external)
+			{
+				LOG_WARNING << "Skipping a module without a file handle in RVA collection";
+				return;
+			}
+		}
+		const std::filesystem::path path{
+		    file && file != INVALID_HANDLE_VALUE ? HandleInformation{}.ComputeFilename(file) :
+		    HandleInformation{}.ComputeMappedFilename(process, baseAddress)};
 		const auto base = reinterpret_cast<uint64_t>(baseAddress);
 		const bool loader = _wcsicmp(path.filename().c_str(), L"ntdll.dll") == 0;
 		const bool selected = live.selected && state_->filter->IsModuleSelected(path.wstring());
@@ -611,7 +655,7 @@ namespace CppCoverage
 				ArchitectureBreakpoint::Instruction original{
 				    installed[i].original, ArchitectureBreakpoint::Encoding(blocks[i].block.instructionSet).size};
 				rangePatches.emplace_back(process, base + blocks[i].block.rva,
-				                          blocks[i].block.instructionSet, original);
+				                          blocks[i].block.instructionSet, original, live.journal.get());
 				++installedCount;
 			}
 			patches.clear();
@@ -665,7 +709,7 @@ namespace CppCoverage
 							ArchitectureBreakpoint::Instruction original{
 							    site.original, ArchitectureBreakpoint::Encoding(hit->block.instructionSet).size};
 							ArchitectureBreakpoint patch{
-							    process, address, hit->block.instructionSet, original};
+							    process, address, hit->block.instructionSet, original, live.journal.get()};
 							if (site.status == State::Breakpoint::Status::Installed)
 							{
 								patch.Restore();
@@ -684,7 +728,7 @@ namespace CppCoverage
 					}
 				}
 			}
-			if (GetThreadId(thread) == live.initialThread &&
+			if (!state_->external && GetThreadId(thread) == live.initialThread &&
 			    !live.startupBreakpointHandled)
 			{
 				for (const auto& loader : live.loaders)
@@ -717,6 +761,8 @@ namespace CppCoverage
 			}
 			return ExceptionType::InvalidBreakPoint;
 		}
+		if (state_->external)
+			return ExceptionType::NotHandled;
 		std::wostringstream message;
 		switch (state_->exceptions.HandleException(process, info, message))
 		{
@@ -732,6 +778,8 @@ namespace CppCoverage
 
 	void RvaCoverageRunner::OnBeforeContinue(HANDLE process)
 	{
+		if (state_->processes.at(ProcessId(process))->stopping)
+			return;
 		if (!state_->hitEpoch)
 			return;
 		auto& live = *state_->processes.at(ProcessId(process));
@@ -753,7 +801,7 @@ namespace CppCoverage
 				ArchitectureBreakpoint::Instruction original{
 				    site.original, ArchitectureBreakpoint::Encoding(block.instructionSet).size};
 				ArchitectureBreakpoint{process, entry.first + block.rva,
-				    block.instructionSet, original}.Restore();
+				    block.instructionSet, original, live.journal.get()}.Restore();
 				site.status = State::Breakpoint::Status::Restored;
 				++restored;
 			}
@@ -763,5 +811,33 @@ namespace CppCoverage
 				          << " restored=" << restored;
 		}
 		live.observedEpoch = state_->hitEpoch;
+	}
+
+	void RvaCoverageRunner::OnAttachedProcessReady(HANDLE process)
+	{
+		auto& live = *state_->processes.at(ProcessId(process));
+		live.bootstrap = false;
+		auto modules = std::move(live.pendingModules);
+		for (const auto& module : modules)
+			LoadModule(process, module.second.get(), reinterpret_cast<void*>(module.first));
+	}
+
+	void RvaCoverageRunner::OnPrepareDetach(HANDLE process)
+	{
+		const auto found = state_->processes.find(ProcessId(process));
+		if (found == state_->processes.end())
+			return;
+		auto& live = *found->second;
+		live.stopping = true;
+		live.journal->Rollback();
+		for (auto& module : live.modules)
+			for (auto& site : module.second.breakpoints)
+				if (site.status == State::Breakpoint::Status::Installed)
+					site.status = State::Breakpoint::Status::Restored;
+	}
+
+	void RvaCoverageRunner::OnDetachedProcess(HANDLE process)
+	{
+		OnExitProcess(process, nullptr, EXIT_PROCESS_DEBUG_INFO{});
 	}
 }

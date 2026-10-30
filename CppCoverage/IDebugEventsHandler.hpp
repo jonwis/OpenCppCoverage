@@ -44,10 +44,12 @@ namespace CppCoverage
 		virtual ExceptionType OnException(HANDLE hProcess, HANDLE hThread, const EXCEPTION_DEBUG_INFO&);
 		// The event's process is stopped until this callback returns.
 		virtual void OnBeforeContinue(HANDLE hProcess);
+		virtual void OnAttachedProcessReady(HANDLE) {}
+		virtual void OnPrepareDetach(HANDLE) {}
+		virtual void OnDetachedProcess(HANDLE) {}
 		
 	private:
 		IDebugEventsHandler(const IDebugEventsHandler&) = delete;
 		IDebugEventsHandler& operator=(const IDebugEventsHandler&) = delete;
 	};	
 }
-

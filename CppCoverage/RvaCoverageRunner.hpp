@@ -9,6 +9,8 @@
 namespace CppCoverage
 {
 	class RunCoverageSettings;
+	class CoverageFilterSettings;
+	class Patterns;
 
 	class CPPCOVERAGE_DLL RvaCoverageRunner : private IDebugEventsHandler
 	{
@@ -16,6 +18,8 @@ namespace CppCoverage
 		RvaCoverageRunner();
 		~RvaCoverageRunner();
 		RvaCoverage RunCoverage(const RunCoverageSettings&);
+		RvaCoverage CollectExisting(
+		    const CoverageFilterSettings&, const Patterns&, unsigned durationSeconds);
 
 	private:
 		struct State;
@@ -27,5 +31,8 @@ namespace CppCoverage
 		void OnUnloadDll(HANDLE, HANDLE, const UNLOAD_DLL_DEBUG_INFO&) override;
 		ExceptionType OnException(HANDLE, HANDLE, const EXCEPTION_DEBUG_INFO&) override;
 		void OnBeforeContinue(HANDLE) override;
+		void OnAttachedProcessReady(HANDLE) override;
+		void OnPrepareDetach(HANDLE) override;
+		void OnDetachedProcess(HANDLE) override;
 	};
 }

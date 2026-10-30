@@ -256,6 +256,18 @@ namespace OpenCppCoverage
 				exitCode = coverageData.GetExitCode();
 				coveraDatas.push_back(std::move(coverageData));
 			}
+			else if (options.GetDuration())
+			{
+				auto raw = cov::RvaCoverageRunner{}.CollectExisting(
+				    coverageFilterSettings, *options.GetProcessPatterns(), *options.GetDuration());
+				for (const auto& output : options.GetExports())
+				{
+					const auto path = output.GetParameter() ? fs::path{*output.GetParameter()} :
+					    fs::path{GetDefaultPathPrefix(options) + L".cov"};
+					cov::WriteRvaCoverage(raw, path);
+				}
+				return raw.exitCode;
+			}
 			cov::CoverageDataMerger	coverageDataMerger;
 
 			auto coverageData = coverageDataMerger.Merge(coveraDatas);

@@ -24,10 +24,13 @@
 #include "Tools/MiniDump.hpp"
 
 #include "OpenCppCoverage.hpp"
+#include "CppCoverage/Debugger.hpp"
 
 //-----------------------------------------------------------------------------
 int main(int argc, const char* argv[])
 {
+	if (const auto helper = CppCoverage::Debugger::RunOwnedHelper(argc, argv))
+		return *helper;
 	Tools::CreateMiniDumpOnUnHandledException();
 	
 	try
