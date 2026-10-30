@@ -142,6 +142,34 @@ namespace CppCoverage
 	}
 
 	//-------------------------------------------------------------------------
+	std::wstring HandleInformation::ComputeMappedFilename(HANDLE process, const void* address) const
+	{
+		std::wstring path(512, L'\0');
+		for (;;)
+		{
+			const DWORD size = GetMappedFileNameW(
+			    process, const_cast<void*>(address), path.data(), static_cast<DWORD>(path.size()));
+			THROW_LAST_ERROR_IF(!size);
+			if (size < path.size() - 1)
+			{
+				path.resize(size);
+				break;
+			}
+			THROW_HR_IF(HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), path.size() >= 32768);
+			path.resize((std::min)(path.size() * 2, size_t{32768}));
+		}
+		for (const auto& mapping : GetQueryDosDevicesMapping())
+		{
+			if (path.size() > mapping.first.size() && path[mapping.first.size()] == L'\\' &&
+			    CompareStringOrdinal(path.data(), static_cast<int>(mapping.first.size()),
+			        mapping.first.c_str(), static_cast<int>(mapping.first.size()), TRUE) == CSTR_EQUAL)
+				return mapping.second + path.substr(mapping.first.size());
+		}
+		THROW_HR_MSG(HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND),
+		    "Cannot translate the mapped module path to a Win32 path");
+	}
+
+	//-------------------------------------------------------------------------
 	std::wstring HandleInformation::ComputeFilename(HANDLE hfile) const
 	{
 		if (hfile == nullptr)

@@ -8,6 +8,8 @@
 #include "CppCoverage/ExportOptionParser.hpp"
 #include "CppCoverage/IOptionParser.hpp"
 #include "CppCoverage/ProcessFilter.hpp"
+#include "CppCoverage/ExistingProcess.hpp"
+#include "CppCoverage/HandleInformation.hpp"
 
 namespace
 {
@@ -75,7 +77,7 @@ TEST(RvaOptionsTest, ResolutionRejectsMissingInputAndProgram)
 	EXPECT_FALSE(ParseRvaOptions({"--module_dir", ".", "--", "test.exe"}));
 }
 
-TEST(RvaOptionsTest, ProcessFiltersRequireSymbolFreeLaunch)
+TEST(RvaOptionsTest, ProcessFiltersRequireSymbolFreeAndValidMode)
 {
 	EXPECT_FALSE(ParseRvaOptions({"--processes", "*notepad*", "--", "test.exe"}));
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*notepad*"}));
@@ -85,6 +87,24 @@ TEST(RvaOptionsTest, ProcessFiltersRequireSymbolFreeLaunch)
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "C:test.exe", "--", "test.exe"}));
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "C:/test.exe", "--", "test.exe"}));
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--excluded_processes", "a\\..\\b", "--", "test.exe"}));
+}
+
+TEST(RvaOptionsTest, ExistingProcessesRequireExplicitCohortModulesAndBound)
+{
+	auto options = ParseRvaOptions({"--symbol-free", "--processes", "fixture-*.exe",
+	    "--excluded_processes", "*excluded*", "--modules", "fixture.dll", "--duration", "2"});
+	ASSERT_TRUE(options);
+	EXPECT_FALSE(options->GetStartInfo());
+	ASSERT_TRUE(options->GetDuration());
+	EXPECT_EQ(2u, *options->GetDuration());
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--duration", "1"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--modules", "*", "--duration", "1"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--modules", "*"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--modules", "*", "--duration", "0"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--modules", "*", "--duration", "-1"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--modules", "*", "--duration", "1", "--cover_children"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--modules", "*", "--duration", "1", "--continue_after_cpp_exception"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--duration", "1", "--", "test.exe"}));
 }
 
 TEST(RvaOptionsTest, RepeatedProcessFiltersAreIndependentOfModulesAndChildren)
@@ -163,4 +183,68 @@ TEST(ProcessFilterTest, StarsBacktrackAndOtherCharactersAreLiteral)
 	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\ab.exe"));
 	EXPECT_TRUE(filter.IsSelected(L"C:\\bin\\app?[1].exe"));
 	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\appx1.exe"));
+}
+
+namespace
+{
+	CppCoverage::ExistingProcess CurrentInstance()
+	{
+		CppCoverage::ExistingProcess process;
+		process.id = GetCurrentProcessId();
+		HANDLE duplicate = nullptr;
+		if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(),
+		    GetCurrentProcess(), &duplicate, 0, FALSE, DUPLICATE_SAME_ACCESS))
+			throw std::runtime_error{"Cannot duplicate test process handle"};
+		process.handle.reset(duplicate);
+		FILETIME exited{}, kernel{}, user{};
+		if (!GetProcessTimes(process.handle.get(), &process.created, &exited, &kernel, &user))
+			throw std::runtime_error{"Cannot query test process identity"};
+		process.path = CppCoverage::HandleInformation{}.ComputeProcessFilename(process.handle.get());
+		return process;
+	}
+
+	BOOL WINAPI KnownCritical(HANDLE, PBOOL value)
+	{
+		*value = TRUE;
+		return TRUE;
+	}
+
+	BOOL WINAPI UnknownCritical(HANDLE, PBOOL)
+	{
+		SetLastError(ERROR_ACCESS_DENIED);
+		return FALSE;
+	}
+
+	BOOL WINAPI AlreadyDebugged(HANDLE, PBOOL value)
+	{
+		*value = TRUE;
+		return TRUE;
+	}
+}
+
+TEST(ExistingProcessTest, CreationTimeAndPathIdentifyOneInstance)
+{
+	auto process = CurrentInstance();
+	EXPECT_TRUE(process.SameInstance(process.handle.get()));
+	++process.created.dwLowDateTime;
+	EXPECT_FALSE(process.SameInstance(process.handle.get()));
+	EXPECT_THROW(process.Validate(), std::exception);
+}
+
+TEST(ExistingProcessTest, CriticalOrUnknownCriticalAdmissionIsRefused)
+{
+	auto process = CurrentInstance();
+	CppCoverage::ExistingProcess::AdmissionChecks checks;
+	checks.critical = &KnownCritical;
+	EXPECT_THROW(process.Validate(checks), std::exception);
+	checks.critical = &UnknownCritical;
+	EXPECT_THROW(process.Validate(checks), std::exception);
+}
+
+TEST(ExistingProcessTest, ExistingDebuggerAdmissionIsRefused)
+{
+	auto process = CurrentInstance();
+	CppCoverage::ExistingProcess::AdmissionChecks checks;
+	checks.debugged = &AlreadyDebugged;
+	EXPECT_THROW(process.Validate(checks), std::exception);
 }

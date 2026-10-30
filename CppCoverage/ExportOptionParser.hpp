@@ -32,6 +32,7 @@ namespace CppCoverage
 		static const std::string ExportTypeOption;
 		static const std::string ExportTypeHtmlValue;
 		static const std::string ExportTypeCoberturaValue;
+		static const std::string ExportTypeCoberturaVisualStudioValue;
 		static const std::string ExportTypeBinaryValue;
 
 		explicit ExportOptionParser(std::vector<ExportPluginDescription>&&);

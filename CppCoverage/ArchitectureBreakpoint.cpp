@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "ArchitectureBreakpoint.hpp"
+#include "BreakpointJournal.hpp"
 
 #include <Windows.h>
 #include <wil/result.h>
@@ -133,9 +134,9 @@ namespace CppCoverage
 
 	ArchitectureBreakpoint::ArchitectureBreakpoint(
 	    HANDLE process, uint64_t address, InstructionSet instructionSet,
-	    Instruction original)
+	    Instruction original, BreakpointJournal* journal)
 	    : process_{process}, address_{address}, instructionSet_{instructionSet},
-	      original_{original}
+	      original_{original}, journal_{journal}
 	{
 		const auto encoding = Encoding(instructionSet);
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), instructionSet == InstructionSet::Arm64 && (address & 3), "Unaligned ARM64 breakpoint address");
@@ -165,6 +166,7 @@ namespace CppCoverage
 		for (const auto* patch : patches)
 		{
 			THROW_HR_IF_MSG(E_INVALIDARG, !patch || patch->process_ != process ||
+			    patch->journal_ != patches.front()->journal_ ||
 			    patch->address_ < end || patch->address_ - address >= original.size() ||
 			    patch->original_.size > original.size() - (patch->address_ - address),
 			    "Unordered, overlapping or out-of-range breakpoint");
@@ -196,13 +198,20 @@ namespace CppCoverage
 			return;
 		}
 #endif
-		Write(process, address, modified.data(), modified.size());
+		if (patches.front()->journal_)
+			patches.front()->journal_->Write(address, modified.data(), modified.size());
+		else
+			Write(process, address, modified.data(), modified.size());
 	}
 
 	void ArchitectureBreakpoint::Install() const
 	{
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !Equal(Read(process_, address_, original_.size), original_), "Code changed before breakpoint installation");
-		Write(process_, address_, Encoding(instructionSet_));
+		const auto encoding = Encoding(instructionSet_);
+		if (journal_)
+			journal_->Write(address_, encoding.bytes.data(), encoding.size);
+		else
+			Write(process_, address_, encoding);
 	}
 
 	void ArchitectureBreakpoint::Restore() const
@@ -211,7 +220,10 @@ namespace CppCoverage
 		if (Equal(current, original_))
 			return;
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), !Equal(current, Encoding(instructionSet_)), "An installed coverage breakpoint was modified");
-		Write(process_, address_, original_);
+		if (journal_)
+			journal_->Write(address_, original_.bytes.data(), original_.size);
+		else
+			Write(process_, address_, original_);
 	}
 
 	void ArchitectureBreakpoint::ResumeThread(HANDLE thread) const

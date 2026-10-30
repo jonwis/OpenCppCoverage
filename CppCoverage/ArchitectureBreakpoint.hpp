@@ -11,6 +11,7 @@
 
 namespace CppCoverage
 {
+	class BreakpointJournal;
 	class CPPCOVERAGE_DLL ArchitectureBreakpoint
 	{
 	public:
@@ -28,7 +29,8 @@ namespace CppCoverage
 
 		ArchitectureBreakpoint(HANDLE process, uint64_t address, InstructionSet);
 		ArchitectureBreakpoint(
-		    HANDLE process, uint64_t address, InstructionSet, Instruction original);
+		    HANDLE process, uint64_t address, InstructionSet, Instruction original,
+		    BreakpointJournal* journal = nullptr);
 		static void InstallRange(
 		    HANDLE process, uint64_t address, const std::vector<uint8_t>& original,
 		    const std::vector<ArchitectureBreakpoint*>& patches);
@@ -43,5 +45,6 @@ namespace CppCoverage
 		uint64_t address_;
 		InstructionSet instructionSet_;
 		Instruction original_;
+		BreakpointJournal* journal_ = nullptr;
 	};
 }

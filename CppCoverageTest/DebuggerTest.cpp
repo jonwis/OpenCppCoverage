@@ -26,6 +26,49 @@ namespace cov = CppCoverage;
 
 namespace CppCoverageTest
 {
+	TEST(DebuggerAttachTest, ApplicationExceptionsDoNotBlockPendingBootstrap)
+	{
+		for (DWORD code : {DWORD{0xe06d7363}, DWORD{0xe0424343}, DWORD{EXCEPTION_ACCESS_VIOLATION}})
+			for (DWORD chance : {DWORD{0}, DWORD{1}})
+			{
+				EXCEPTION_DEBUG_INFO event{};
+				event.dwFirstChance = chance;
+				event.ExceptionRecord.ExceptionCode = code;
+				event.ExceptionRecord.ExceptionAddress = reinterpret_cast<void*>(0x1000);
+				for (DWORD thread : {DWORD{7}, DWORD{8}})
+					EXPECT_EQ(DBG_EXCEPTION_NOT_HANDLED,
+					    cov::Debugger::AttachExceptionDisposition(event, thread, false, 8, 0x2000));
+			}
+		EXCEPTION_DEBUG_INFO bootstrap{};
+		bootstrap.dwFirstChance = 1;
+		bootstrap.ExceptionRecord.ExceptionCode = EXCEPTION_BREAKPOINT;
+		bootstrap.ExceptionRecord.ExceptionAddress = reinterpret_cast<void*>(0x2000);
+		EXPECT_EQ(DBG_CONTINUE,
+		    cov::Debugger::AttachExceptionDisposition(bootstrap, 8, false, 8, 0x2000));
+	}
+
+	TEST(DebuggerAttachTest, HeldOriginalThreadBreakpointsRemainApplicationOwned)
+	{
+		for (DWORD code : {DWORD{EXCEPTION_BREAKPOINT}, DWORD{0x4000001f}})
+		{
+			EXCEPTION_DEBUG_INFO event{};
+			event.dwFirstChance = 1;
+			event.ExceptionRecord.ExceptionCode = code;
+			event.ExceptionRecord.ExceptionAddress = reinterpret_cast<void*>(0x2000);
+			EXPECT_EQ(DBG_EXCEPTION_NOT_HANDLED,
+			    cov::Debugger::AttachExceptionDisposition(event, 7, true, 8, 0x2000));
+			EXPECT_THROW(cov::Debugger::AttachExceptionDisposition(event, 7, false, 8, 0x2000),
+			    std::exception);
+			EXPECT_EQ(DBG_CONTINUE,
+			    cov::Debugger::AttachExceptionDisposition(event, 8, false, 8, 0x2000));
+			event.dwFirstChance = 0;
+			EXPECT_EQ(DBG_EXCEPTION_NOT_HANDLED,
+			    cov::Debugger::AttachExceptionDisposition(event, 7, true, 8, 0x2000));
+			EXPECT_THROW(cov::Debugger::AttachExceptionDisposition(event, 8, false, 8, 0x2000),
+			    std::exception);
+		}
+	}
+
 	//-----------------------------------------------------------------------------
 	TEST(DebugerTest, Debug)
 	{		

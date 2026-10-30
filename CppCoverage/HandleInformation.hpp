@@ -28,11 +28,11 @@ namespace CppCoverage
 		HandleInformation();
 		std::wstring ComputeFilename(HANDLE hfile) const;
 		std::wstring ComputeProcessFilename(HANDLE process) const;
+		std::wstring ComputeMappedFilename(HANDLE process, const void* address) const;
 
 	private:
 		HandleInformation(const HandleInformation&) = delete;
 		HandleInformation& operator=(const HandleInformation&) = delete;
 	};
 }
-
 

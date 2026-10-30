@@ -105,6 +105,8 @@ namespace CppCoverage
 	const std::string ExportOptionParser::ExportTypeHtmlValue = "html";
 	const std::string ExportOptionParser::ExportTypeCoberturaValue =
 	    "cobertura";
+	const std::string ExportOptionParser::ExportTypeCoberturaVisualStudioValue =
+	    "cobertura-vs";
 	const std::string ExportOptionParser::ExportTypeBinaryValue = "binary";
 
 	//-------------------------------------------------------------------------
@@ -118,6 +120,9 @@ namespace CppCoverage
 		exportTypes_.emplace(
 		    Tools::LocalToWString(ExportOptionParser::ExportTypeCoberturaValue),
 		    OptionsExportType::Cobertura);
+		exportTypes_.emplace(
+		    Tools::LocalToWString(ExportOptionParser::ExportTypeCoberturaVisualStudioValue),
+		    OptionsExportType::CoberturaVisualStudio);
 		exportTypes_.emplace(
 		    Tools::LocalToWString(ExportOptionParser::ExportTypeBinaryValue),
 		    OptionsExportType::Binary);
@@ -174,6 +179,9 @@ namespace CppCoverage
 		     {Tools::LocalToWString(
 		          ExportOptionParser::ExportTypeCoberturaValue),
 		      L"output file (optional)"},
+		     {Tools::LocalToWString(
+		          ExportOptionParser::ExportTypeCoberturaVisualStudioValue),
+		      L"Visual Studio conversion intermediate (optional output file)"},
 		     {Tools::LocalToWString(ExportOptionParser::ExportTypeBinaryValue),
 		      L"output file (optional)"}};
 		for (const auto& description : exportPluginDescriptions_)

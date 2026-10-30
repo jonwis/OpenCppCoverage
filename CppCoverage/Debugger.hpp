@@ -29,6 +29,7 @@ namespace CppCoverage
 {
 	class StartInfo;
 	class IDebugEventsHandler;
+	class Patterns;
 
 	class CPPCOVERAGE_DLL Debugger
 	{
@@ -39,6 +40,10 @@ namespace CppCoverage
             bool stopOnAssert);
 
 		int Debug(const StartInfo&, IDebugEventsHandler&);
+		int AttachExisting(const Patterns&, unsigned durationSeconds, IDebugEventsHandler&);
+		static boost::optional<int> RunOwnedHelper(int argc, const char* const* argv);
+		static DWORD AttachExceptionDisposition(const EXCEPTION_DEBUG_INFO&,
+		    DWORD thread, bool heldOriginalThread, DWORD bootstrapThread, ULONG_PTR bootstrapAddress);
 		size_t GetRunningProcesses() const;
 		size_t GetRunningThreads() const;
 
@@ -70,6 +75,7 @@ namespace CppCoverage
 		boost::optional<int> ReapExitedProcesses(IDebugEventsHandler&);
 
 		ProcessStatus HandleDebugEvent(const DEBUG_EVENT&, IDebugEventsHandler&);
+		DWORD DispatchExternalEvent(const DEBUG_EVENT&, IDebugEventsHandler&);
 
 		ProcessStatus HandleNotCreationalEvent(
 			const DEBUG_EVENT& debugEvent,
@@ -86,6 +92,7 @@ namespace CppCoverage
 		std::unordered_set<DWORD> completedProcessIds_;
 		boost::optional<DWORD> rootProcessId_;
 		bool coverChildren_;
+		bool external_ = false;
 		bool continueAfterCppException_;
         bool stopOnAssert_;
     };

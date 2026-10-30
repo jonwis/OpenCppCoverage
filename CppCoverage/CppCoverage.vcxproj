@@ -337,6 +337,13 @@
     <ClInclude Include="PeImage.hpp" />
     <ClInclude Include="BasicBlockDiscovery.hpp" />
     <ClInclude Include="ArchitectureBreakpoint.hpp" />
+    <ClInclude Include="BreakpointJournal.hpp" />
+    <ClCompile Include="BreakpointJournal.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="ExistingProcess.hpp" />
+    <ClCompile Include="ExistingProcess.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="ThreadSuspension.hpp" />
+    <ClCompile Include="ThreadSuspension.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="DebuggerAttach.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClInclude Include="RvaCoverage.hpp" />
     <ClInclude Include="RvaCoverageResolver.hpp" />
     <ClInclude Include="RvaCoverageRunner.hpp" />

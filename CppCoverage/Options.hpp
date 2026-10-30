@@ -18,6 +18,7 @@
 
 #include <boost/optional.hpp>
 #include <filesystem>
+#include <cstdint>
 
 #include "CppCoverageExport.hpp"
 #include "Patterns.hpp"
@@ -55,6 +56,8 @@ namespace CppCoverage
 		const StartInfo* GetStartInfo() const;
 		void EnableSymbolFreeMode() { symbolFree_ = true; }
 		bool IsSymbolFreeModeEnabled() const { return symbolFree_; }
+		void SetDuration(uint32_t seconds) { duration_ = seconds; }
+		const boost::optional<uint32_t>& GetDuration() const { return duration_; }
 		void SetResolvePath(const std::filesystem::path& path) { resolvePath_ = path; }
 		const boost::optional<std::filesystem::path>& GetResolvePath() const { return resolvePath_; }
 		void AddModuleDirectory(const std::filesystem::path& path) { moduleDirectories_.push_back(path); }
@@ -108,6 +111,7 @@ namespace CppCoverage
 		boost::optional<Patterns> processPatterns_;
 		boost::optional<StartInfo> optionalStartInfo_;
 		bool symbolFree_ = false;
+		boost::optional<uint32_t> duration_;
 		boost::optional<std::filesystem::path> resolvePath_;
 		std::vector<std::filesystem::path> moduleDirectories_;
 

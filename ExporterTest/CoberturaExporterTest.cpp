@@ -21,6 +21,7 @@
 #include <regex>
 
 #include <boost/algorithm/string.hpp>
+#include <boost/property_tree/xml_parser.hpp>
 
 #include "Plugin/Exporter/CoverageData.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
@@ -88,6 +89,53 @@ namespace ExporterTest
 		ASSERT_FALSE(Tools::FileExists(outputPath));
 		Exporter::CoberturaExporter().Export(coverageData, outputPath);
 		ASSERT_TRUE(Tools::FileExists(outputPath));
+	}
+
+	TEST(CoberturaExporterTest, VisualStudioPreservesSourcePathsAndFileLines)
+	{
+		Plugin::CoverageData coverageData{L"", 0};
+		auto& module = coverageData.AddModule(L"C:\\bin\\sample.dll");
+		module.AddFile(L"C:\\source\\same.cpp").AddLine(10, true);
+		module.AddFile(L"D:\\source\\same.cpp").AddLine(20, false);
+		module.AddFile(L"\\\\server\\share\\source.cpp").AddLine(30, true);
+
+		std::wstringstream stream;
+		Exporter::CoberturaExporter(true).Export(coverageData, stream);
+		boost::property_tree::wptree tree;
+		boost::property_tree::read_xml(stream, tree);
+		const auto& package = tree.get_child(L"coverage.packages.package");
+		EXPECT_EQ(package.get<std::wstring>(L"<xmlattr>.name"),
+			L"sample.dll [module 1].coverage-module");
+		EXPECT_EQ(tree.get<std::wstring>(L"coverage.sources.source"), L"");
+		size_t index = 0;
+		const std::wstring paths[] = {L"C:\\source\\same.cpp",
+			L"D:\\source\\same.cpp", L"\\\\server\\share\\source.cpp"};
+		for (const auto& entry : package.get_child(L"classes"))
+		{
+			const auto& file = entry.second;
+			EXPECT_EQ(file.get<std::wstring>(L"<xmlattr>.filename"), paths[index]);
+			EXPECT_EQ(file.get<std::wstring>(L"methods.method.<xmlattr>.name"),
+				L"[file-level coverage]");
+			const auto& line = file.get_child(L"lines.line");
+			const auto& methodLine = file.get_child(L"methods.method.lines.line");
+			EXPECT_EQ(line.get<unsigned>(L"<xmlattr>.number"), (index + 1) * 10);
+			EXPECT_EQ(methodLine.get<unsigned>(L"<xmlattr>.number"),
+				line.get<unsigned>(L"<xmlattr>.number"));
+			EXPECT_EQ(methodLine.get<unsigned>(L"<xmlattr>.hits"), index == 1 ? 0u : 1u);
+			++index;
+		}
+		EXPECT_EQ(index, 3u);
+	}
+
+	TEST(CoberturaExporterTest, VisualStudioDistinguishesSameModuleBasename)
+	{
+		Plugin::CoverageData coverageData{L"", 0};
+		coverageData.AddModule(L"C:\\one\\sample.dll").AddFile(L"same.cpp").AddLine(1, true);
+		coverageData.AddModule(L"D:\\two\\sample.dll").AddFile(L"same.cpp").AddLine(1, false);
+		std::wostringstream stream;
+		Exporter::CoberturaExporter(true).Export(coverageData, stream);
+		EXPECT_NE(stream.str().find(L"sample.dll [module 1].coverage-module"), std::wstring::npos);
+		EXPECT_NE(stream.str().find(L"sample.dll [module 2].coverage-module"), std::wstring::npos);
 	}
 
 	//-------------------------------------------------------------------------

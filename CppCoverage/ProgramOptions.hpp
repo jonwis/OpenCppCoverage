@@ -54,6 +54,7 @@ namespace CppCoverage
 		static const std::string ExcludedLineRegexOption;
 		static const std::string SubstitutePdbSourcePathOption;
 		static const std::string SymbolFreeOption;
+		static const std::string DurationOption;
 		static const std::string ResolveOption;
 		static const std::string ModuleDirectoryOption;
 

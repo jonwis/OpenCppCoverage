@@ -66,16 +66,17 @@ namespace Exporter
 		void FillFileTree(
 			const CppCoverage::CoverageRateComputer& coverageRateComputer,
 			property_tree::wptree& fileTree, 
-			const Plugin::FileCoverage& file)
+			const Plugin::FileCoverage& file,
+			bool visualStudio)
 		{
 			const auto& path = file.GetPath();
-			auto res = path.relative_path();
 			const auto& coverageRate = coverageRateComputer.GetCoverageRate(file);
 
-			fileTree.put(L"<xmlattr>.name", ToUft8WString(path.filename()));
-			fileTree.put(L"<xmlattr>.filename", ToUft8WString(path.relative_path()));
+			fileTree.put(L"<xmlattr>.name", ToUft8WString(visualStudio ? path : path.filename()));
+			fileTree.put(L"<xmlattr>.filename",
+				ToUft8WString(visualStudio ? path : path.relative_path()));
 			SetCoverage(fileTree, coverageRate);
-			AddChild(fileTree, L"methods");
+			auto& methodsTree = AddChild(fileTree, L"methods");
 
 			property_tree::wptree& linesTree = AddChild(fileTree, L"lines");
 
@@ -85,6 +86,16 @@ namespace Exporter
 
 				lineTree.put(L"<xmlattr>.number", std::to_wstring(line.GetLineNumber()));
 				lineTree.put(L"<xmlattr>.hits", line.HasBeenExecuted() ? L"1" : L"0");
+			}
+
+			if (visualStudio && !file.GetLines().empty())
+			{
+				// Microsoft's importer reads method lines; the model has file-level coverage.
+				auto& methodTree = AddChild(methodsTree, L"method");
+				methodTree.put(L"<xmlattr>.name", L"[file-level coverage]");
+				methodTree.put(L"<xmlattr>.signature", L"");
+				SetCoverage(methodTree, coverageRate);
+				methodTree.add_child(L"lines", linesTree);
 			}
 		}
 
@@ -130,7 +141,8 @@ namespace Exporter
 		//-------------------------------------------------------------------------
 		void FillCoverageTree(
 			property_tree::wptree& root,
-			const Plugin::CoverageData& coverageData)
+			const Plugin::CoverageData& coverageData,
+			bool visualStudio)
 		{
 			CppCoverage::CoverageRateComputer coverageRateComputer(coverageData);
 			auto& coverageTree = AddChild(root, L"coverage");
@@ -138,10 +150,14 @@ namespace Exporter
 			SetCoverage(coverageTree, coverageRate);
 			SetCoverageAttributes(coverageTree, coverageRate);
 
-			WriteSourceRoots(coverageData, coverageTree);
+			if (visualStudio)
+				AddChild(coverageTree, L"sources").add(L"source", L"");
+			else
+				WriteSourceRoots(coverageData, coverageTree);
 
 			property_tree::wptree& packagesTree = AddChild(coverageTree, L"packages");
 
+			size_t moduleIndex = 0;
 			for (const auto& module : coverageData.GetModules())
 			{
 				// Do not create package if no files exists -> Coverage will not be visible by module
@@ -151,13 +167,20 @@ namespace Exporter
 					property_tree::wptree& classesTree = AddChild(packageTree, L"classes");
 					const auto& coverageRate = coverageRateComputer.GetCoverageRate(*module);
 
-					packageTree.put(L"<xmlattr>.name", ToUft8WString(module->GetPath()));
+					auto moduleName = module->GetPath();
+					if (visualStudio)
+					{
+						// The importer strips directories and the final extension from module names.
+						moduleName = moduleName.filename().wstring() + L" [module " +
+							std::to_wstring(++moduleIndex) + L"].coverage-module";
+					}
+					packageTree.put(L"<xmlattr>.name", ToUft8WString(moduleName));
 					SetCoverage(packageTree, coverageRate);
 
 					for (const auto& file : module->GetFiles())
 					{
 						property_tree::wptree& fileTree = AddChild(classesTree, L"class");
-						FillFileTree(coverageRateComputer, fileTree, *file);
+						FillFileTree(coverageRateComputer, fileTree, *file, visualStudio);
 					}
 				}
 			}
@@ -167,12 +190,17 @@ namespace Exporter
 	//-------------------------------------------------------------------------
 	CoberturaExporter::CoberturaExporter() = default;
 
+	CoberturaExporter::CoberturaExporter(bool visualStudio)
+		: visualStudio_{visualStudio}
+	{
+	}
+
 	//-------------------------------------------------------------------------
 	std::filesystem::path CoberturaExporter::GetDefaultPath(const std::wstring& prefix) const
 	{
 		std::filesystem::path path{ prefix };
 		
-		path += "Coverage.xml";
+		path += visualStudio_ ? "Coverage.vs.xml" : "Coverage.xml";
 
 		return path;		
 	}
@@ -183,7 +211,7 @@ namespace Exporter
 		const std::filesystem::path& output)
 	{
 		Tools::CreateParentFolderIfNeeded(output);
-		std::wofstream ofs{ output.string().c_str() };
+		std::wofstream ofs{ output };
 
 		if (!ofs)
 			throw InvalidOutputFileException(output, "cobertura");
@@ -199,7 +227,7 @@ namespace Exporter
 		using Ptree = property_tree::wptree;
 		Ptree root;
 		
-		FillCoverageTree(root, coverageData);
+		FillCoverageTree(root, coverageData, visualStudio_);
 
 		property_tree::xml_writer_settings<Ptree::key_type> settings(' ', 2);
 		property_tree::xml_parser::write_xml(ostream, root, settings);
