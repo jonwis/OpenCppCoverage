@@ -6,6 +6,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <wil/resource.h>
+#include <wil/result.h>
 
 #ifdef _M_ARM64EC
 extern "C" int EmulatedPath();
@@ -41,54 +43,47 @@ namespace
 	{
 		if (argc < 4)
 			return 109;
-		HANDLE token = nullptr, restricted = nullptr;
+		wil::unique_handle token;
+		THROW_IF_WIN32_BOOL_FALSE(OpenProcessToken(
+		    GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, token.put()));
 		TOKEN_PRIVILEGES removed{};
-		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &token))
-			return 111;
-		if (!LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &removed.Privileges[0].Luid) ||
-		    !CreateRestrictedToken(token, 0, 0, nullptr, 1, removed.Privileges, 0, nullptr, &restricted))
-		{
-			CloseHandle(token);
-			return 112;
-		}
+		THROW_IF_WIN32_BOOL_FALSE(LookupPrivilegeValueW(
+		    nullptr, SE_DEBUG_NAME, &removed.Privileges[0].Luid));
+		wil::unique_handle restricted;
+		THROW_IF_WIN32_BOOL_FALSE(CreateRestrictedToken(
+		    token.get(), 0, 0, nullptr, 1, removed.Privileges, 0, nullptr, restricted.put()));
 		std::string command;
 		for (int index = 2; index < argc; ++index)
 		{
 			if (std::strchr(argv[index], '"'))
-			{
-				CloseHandle(restricted);
-				CloseHandle(token);
 				return 94;
-			}
 			command += "\"" + std::string{argv[index]} + "\" ";
 		}
 		STARTUPINFOA startup{};
 		startup.cb = sizeof(startup);
 		startup.dwFlags = STARTF_USESTDHANDLES;
 		SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-		startup.hStdInput = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-		    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-		const auto duplicate = [&](DWORD source, HANDLE& destination) {
-			return DuplicateHandle(GetCurrentProcess(), GetStdHandle(source), GetCurrentProcess(),
-			    &destination, 0, TRUE, DUPLICATE_SAME_ACCESS);
+		wil::unique_hfile input{CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+		THROW_LAST_ERROR_IF(!input);
+		wil::unique_handle output, error;
+		const auto duplicate = [&](DWORD source, wil::unique_handle& destination) {
+			THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(GetCurrentProcess(), GetStdHandle(source),
+			    GetCurrentProcess(), destination.put(), 0, TRUE, DUPLICATE_SAME_ACCESS));
 		};
-		PROCESS_INFORMATION process{};
-		const bool started = startup.hStdInput != INVALID_HANDLE_VALUE &&
-		    duplicate(STD_OUTPUT_HANDLE, startup.hStdOutput) &&
-		    duplicate(STD_ERROR_HANDLE, startup.hStdError) &&
-		    CreateProcessAsUserA(restricted, argv[2], &command[0], nullptr, nullptr,
-		        TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
-		const auto error = GetLastError();
-		for (const auto handle : {startup.hStdInput, startup.hStdOutput, startup.hStdError, restricted, token})
-			if (handle && handle != INVALID_HANDLE_VALUE)
-				CloseHandle(handle);
-		if (!started)
-			return static_cast<int>(error ? error : 113);
-		CloseHandle(process.hThread);
+		duplicate(STD_OUTPUT_HANDLE, output);
+		duplicate(STD_ERROR_HANDLE, error);
+		startup.hStdInput = input.get();
+		startup.hStdOutput = output.get();
+		startup.hStdError = error.get();
+		wil::unique_process_information process;
+		THROW_IF_WIN32_BOOL_FALSE(CreateProcessAsUserA(restricted.get(), argv[2], &command[0],
+		    nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process));
 		DWORD code = 114;
-		if (WaitForSingleObject(process.hProcess, 120000) == WAIT_OBJECT_0)
-			GetExitCodeProcess(process.hProcess, &code);
-		CloseHandle(process.hProcess);
+		const auto wait = WaitForSingleObject(process.hProcess, 120000);
+		THROW_LAST_ERROR_IF(wait == WAIT_FAILED);
+		if (wait == WAIT_OBJECT_0)
+			THROW_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(process.hProcess, &code));
 		return static_cast<int>(code);
 	}
 
