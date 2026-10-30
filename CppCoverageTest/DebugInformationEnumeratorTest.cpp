@@ -95,4 +95,53 @@ namespace CppCoverageTest
 
 		ASSERT_EQ(debugInformationHandler.lines_, lineWithDebugInfo);
 	}
+
+	//-------------------------------------------------------------------------
+	TEST(DebugInformationEnumeratorTest, SubstituteSourceDirectory)
+	{
+		DebugInformationHandlerMock original{
+		    TestCoverageConsole::GetDebugInformationEnumeratorTestPath()};
+		CppCoverage::DebugInformationEnumerator unmodified{{}};
+		ASSERT_TRUE(unmodified.Enumerate(
+		    TestCoverageConsole::GetOutputBinaryPath(), original));
+		const auto selectedPath = original.selectedFullPath_;
+		ASSERT_FALSE(selectedPath.empty());
+		const auto directory = selectedPath.parent_path().wstring();
+		const std::filesystem::path localRoot{L"C:\\mapped-sources"};
+		for (const auto& prefix : {directory, directory + L"\\"})
+		{
+			SCOPED_TRACE(prefix);
+			std::vector<CppCoverage::SubstitutePdbSourcePath> substitutions;
+			substitutions.emplace_back(
+			    std::filesystem::path{prefix}, std::filesystem::path{localRoot});
+			CppCoverage::DebugInformationEnumerator enumerator{substitutions};
+			DebugInformationHandlerMock handler{selectedPath.filename()};
+			ASSERT_TRUE(enumerator.Enumerate(
+			    TestCoverageConsole::GetOutputBinaryPath(), handler));
+			ASSERT_EQ(localRoot / selectedPath.filename(), handler.selectedFullPath_);
+		}
+	}
+
+	//-------------------------------------------------------------------------
+	TEST(DebugInformationEnumeratorTest, DoNotSubstitutePartialSourceDirectory)
+	{
+		DebugInformationHandlerMock original{
+		    TestCoverageConsole::GetDebugInformationEnumeratorTestPath()};
+		CppCoverage::DebugInformationEnumerator unmodified{{}};
+		ASSERT_TRUE(unmodified.Enumerate(
+		    TestCoverageConsole::GetOutputBinaryPath(), original));
+		const auto selectedPath = original.selectedFullPath_;
+		auto directoryPrefix = selectedPath.parent_path().wstring();
+		ASSERT_FALSE(directoryPrefix.empty());
+		directoryPrefix.pop_back();
+		std::vector<CppCoverage::SubstitutePdbSourcePath> substitutions;
+		substitutions.emplace_back(
+		    std::filesystem::path{directoryPrefix},
+		    std::filesystem::path{L"C:\\mapped-sources"});
+		CppCoverage::DebugInformationEnumerator enumerator{substitutions};
+		DebugInformationHandlerMock handler{selectedPath.filename()};
+		ASSERT_TRUE(enumerator.Enumerate(
+		    TestCoverageConsole::GetOutputBinaryPath(), handler));
+		ASSERT_EQ(selectedPath, handler.selectedFullPath_);
+	}
 }
