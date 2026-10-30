@@ -25,12 +25,16 @@ param(
     [switch]$RejectDebugged,
     [switch]$LoaderLock,
     [switch]$ExitDuringCollection,
+    [switch]$Watch,
     [switch]$ExpectMixedIsa
 )
 $ErrorActionPreference = 'Stop'
 if ($LibraryOnly -and !$Library) { throw 'LibraryOnly requires Library.' }
 if ($LoaderLock -and !$Library) { throw 'LoaderLock requires Library.' }
 if ($RejectDebugged -and !$Cancel) { throw 'RejectDebugged requires Cancel.' }
+if ($Watch -and (!$LibraryOnly -or !$Library -or $LoaderLock -or $ExitDuringCollection)) {
+    throw 'Watch requires LibraryOnly and Library; LoaderLock and ExitDuringCollection use the fixed-cohort scenarios.'
+}
 $Tool = (Resolve-Path -LiteralPath $Tool).Path
 $Fixture = (Resolve-Path -LiteralPath $Fixture).Path
 $null = New-Item -ItemType Directory -Force -Path $OutputDirectory
@@ -39,6 +43,7 @@ $tag = 'occ-' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $events = @{}
 $processes = @()
 $targetPaths = @{}
+$fixtureArguments = @{}
 $collector = $null
 $passed = $false
 
@@ -52,6 +57,25 @@ function Start-OwnedProcess([string]$Path, [string[]]$Arguments, [string]$Name) 
 function Read-CollectorLog([string]$Name) {
     return ((Get-Content -LiteralPath (Join-Path $OutputDirectory "$Name.stdout.log") -Raw -ErrorAction SilentlyContinue) +
             (Get-Content -LiteralPath (Join-Path $OutputDirectory "$Name.stderr.log") -Raw -ErrorAction SilentlyContinue))
+}
+
+function Start-FixtureRole([string]$Role) {
+    if ($Role -eq 'b') {
+        return Start-OwnedProcess (Join-Path $fixtureDirectory "$tag-parent.exe") `
+            (@('--external-spawn', $targetPaths[$Role]) + $fixtureArguments[$Role]) 'parent'
+    }
+    return Start-OwnedProcess $targetPaths[$Role] $fixtureArguments[$Role] $Role
+}
+
+function Wait-FixtureAttachment([string]$Role, [string]$Name) {
+    if (!$events["$Role-ready"].WaitOne(15000)) { throw "Fixture did not become ready: $Role" }
+    $target = Get-Process -Name ([IO.Path]::GetFileNameWithoutExtension($targetPaths[$Role]))
+    $limit = [DateTime]::UtcNow.AddSeconds($AdmissionTimeoutSeconds)
+    while (!$collector.HasExited -and [DateTime]::UtcNow -lt $limit) {
+        if ((Read-CollectorLog $Name) -match "Attached existing process pid=$($target.Id)\b") { return }
+        Start-Sleep -Milliseconds 50
+    }
+    throw "Watched fixture was not attached: $Role"
 }
 
 try {
@@ -75,30 +99,31 @@ try {
         if ($Library) {
             $arguments += @(Join-Path $fixtureDirectory ([IO.Path]::GetFileName($Library)))
             $arguments += $role
-            if ($role -eq 'b') { $arguments += 'delayed' }
+            if ($role -eq 'b' -or ($Watch -and $role -ne 'excluded')) { $arguments += 'delayed' }
             if ($LoaderLock -and $role -eq 'a') { $arguments += @('preloaded', 'hold-loader-lock') }
         }
         if ($role -eq 'b') {
             $parentPath = Join-Path $fixtureDirectory "$tag-parent.exe"
             Copy-Item -LiteralPath $Fixture -Destination $parentPath -Force
-            $processes += Start-OwnedProcess $parentPath (@('--external-spawn', $path) + $arguments) 'parent'
         }
-        else {
-            $processes += Start-OwnedProcess $path $arguments $role
-        }
+        $fixtureArguments[$role] = $arguments
+        if ($Watch) { continue }
+        $processes += Start-FixtureRole $role
         if (!$events["$role-ready"].WaitOne(15000)) { throw "Fixture did not become ready: $role" }
         if ($LoaderLock -and $role -eq 'a' -and !$events['a-locked'].WaitOne(15000)) {
             throw 'The original sentinel thread did not enter DllMain under the loader lock.'
         }
     }
-    $rounds = if ($ExitDuringCollection) { @(1) } else { @(1, 2) }
+    $rounds = if ($ExitDuringCollection -or $Watch) { @(1) } else { @(1, 2) }
     foreach ($round in $rounds) {
         $name = "round-$round"
         $raw = Join-Path $OutputDirectory "$name.cov"
         $xml = Join-Path $OutputDirectory "$name.xml"
         $duration = if ($Cancel) { '60' } else { '2' }
+        if ($Watch -and !$Cancel) { $duration = '30' }
         $arguments = @('--verbose', '--symbol-free', '--duration', $duration,
                        '--export_type', "binary:$raw")
+        if ($Watch) { $arguments += '--watch_processes' }
         if (!$LibraryOnly) { $arguments += @('--modules', "$tag-match-*.exe") }
         if ($Library) { $arguments += @('--modules', [IO.Path]::GetFileName($Library)) }
         if ($round -eq 1) {
@@ -133,11 +158,31 @@ try {
             }
             $deadline = [DateTime]::UtcNow.AddSeconds($AdmissionTimeoutSeconds)
             while (!$collector.HasExited -and [DateTime]::UtcNow -lt $deadline) {
-                if ((Read-CollectorLog $name) -match 'cohort collection started; count=2') { break }
+                $started = if ($Watch) { 'Process watch started; initial_candidates=0' } `
+                    else { 'cohort collection started; count=2' }
+                if ((Read-CollectorLog $name) -match $started) { break }
                 Start-Sleep -Milliseconds 50
             }
             if ($collector.HasExited -or [DateTime]::UtcNow -ge $deadline) {
                 throw "Collector did not admit its fixed cohort (see $name logs)."
+            }
+            if ($Watch) {
+                Start-Sleep -Milliseconds 1200
+                if ($collector.HasExited) { throw 'Watch stopped during the initially empty interval.' }
+                $processes += Start-FixtureRole 'a'
+                Wait-FixtureAttachment 'a' $name
+                $null = $events['a-load'].Set()
+                $null = $events['a-work'].Set()
+                if (!$events['a-hit'].WaitOne(10000)) { throw 'First watched instance did not contribute.' }
+                $null = $events['a-stop'].Set()
+                if (!$processes[0].WaitForExit(10000) -or $processes[0].ExitCode -ne 0) {
+                    throw 'First watched instance did not exit naturally.'
+                }
+                Start-Sleep -Milliseconds 1200
+                if ($collector.HasExited) { throw 'Watch stopped between successive process instances.' }
+                foreach ($role in 'b', 'excluded') { $processes += Start-FixtureRole $role }
+                Wait-FixtureAttachment 'b' $name
+                if (!$events['excluded-ready'].WaitOne(15000)) { throw 'Excluded fixture was not ready.' }
             }
             if ($LoaderLock -and $round -eq 1) {
                 if ($events['a-release'].WaitOne(0) -or $events['a-unlocked'].WaitOne(0)) {
@@ -161,11 +206,13 @@ try {
                 }
             }
             foreach ($role in 'a', 'b', 'excluded') {
+                if ($Watch -and $role -eq 'a') { continue }
                 $null = $events["$role-hit"].Reset()
                 $null = $events["$role-work"].Set()
             }
             $null = $events['b-load'].Set()
             foreach ($role in 'a', 'b', 'excluded') {
+                if ($Watch -and $role -eq 'a') { continue }
                 if (!$events["$role-hit"].WaitOne(30000)) {
                     throw "Fixture did not execute its coverage contributor: $role"
                 }
@@ -182,11 +229,28 @@ try {
             foreach ($pdb in $pdbLocks) { $pdb.Dispose() }
         }
         $diagnostics = Read-CollectorLog $name
+        $detachCount = if ($Watch) { 1 } else { 2 }
         if (!$ExitDuringCollection -and
-            ($diagnostics | Select-String 'Detached existing process pid=' -AllMatches).Matches.Count -ne 2) {
-            throw 'Both existing processes must detach successfully.'
+            ($diagnostics | Select-String 'Detached existing process pid=' -AllMatches).Matches.Count -ne $detachCount) {
+            throw 'Every surviving selected instance must detach successfully.'
+        }
+        if ($Watch -and
+            ($diagnostics | Select-String 'Attaching existing process pid=' -AllMatches).Matches.Count -ne 2) {
+            throw 'Watch must attach both successive selected instances and leave the parent and excluded instance alone.'
+        }
+        if ($Watch) {
+            $preparationPattern = 'RVA preparation pid=\d+ module=' +
+                [regex]::Escape([IO.Path]::GetFileName($Library)) +
+                ' blocks=\d+ installed=(\d+) discovery_cached=(true|false)'
+            $preparations = [regex]::Matches($diagnostics, $preparationPattern)
+            if ($preparations.Count -ne 2 -or
+                $preparations[1].Groups[2].Value -ne 'true' -or
+                [int]$preparations[1].Groups[1].Value -ge [int]$preparations[0].Groups[1].Value) {
+                throw 'A later identical DLL load must reuse discovery and skip RVAs hit by the earlier exited instance.'
+            }
         }
         foreach ($role in 'a', 'b', 'excluded') {
+            if ($Watch -and $role -eq 'a') { continue }
             if ($ExitDuringCollection -and $role -ne 'excluded') { continue }
             $null = $events["$role-checked"].Reset()
             $null = $events["$role-post"].Set()

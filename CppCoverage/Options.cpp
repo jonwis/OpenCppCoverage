@@ -231,6 +231,7 @@ namespace CppCoverage
 		ostr << L"Sources: " << options.sources_ << std::endl;
 		ostr << L"Log Level: " << GetLogLevelStr(options.GetLogLevel()) << std::endl;
 		ostr << L"Symbol-free: " << options.symbolFree_ << std::endl;
+		ostr << L"Watch processes: " << options.watchProcesses_ << std::endl;
 		if (options.resolvePath_)
 			ostr << L"Resolve: " << options.resolvePath_->wstring() << std::endl;
 		ostr << L"Cover Children: " << options.isCoverChildrenModeEnabled_ << std::endl;

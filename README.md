@@ -195,7 +195,7 @@ software breakpoints can remain in external processes. Use controlled targets
 and allow orderly cleanup; do not forcibly end the collector.
 
 Collection observes execution after attachment. Earlier execution, startup code,
-and DLL initialization that already ran are not recovered. Future process
+and DLL initialization that already ran are not recovered. By default, future
 launches and children outside the initial cohort are not monitored;
 `--cover_children` is rejected in existing-process mode. Use controlled launch
 when coverage must begin before application entry.
@@ -206,6 +206,31 @@ processes, and unsupported architectures. Admission failures are logged and give
 a nonzero result even when other targets contribute. Inaccessible candidates
 whose main-image paths cannot be checked are reported as incomplete admissions.
 An empty eligible cohort also returns a nonzero result.
+
+#### Watch future process launches
+
+Add `--watch_processes` to attach existing matches and matching future instances:
+
+```powershell
+.\OpenCppCoverage.exe --symbol-free --watch_processes --processes 'MyHost*.exe' --excluded_processes '*helper*' --modules MyLibrary.dll --duration 60 --export_type binary:watched.cov
+```
+
+Watch mode starts an owned real-time ETW process session before the initial
+snapshot. The duration begins after that snapshot, includes attachment time, and
+continues through empty intervals. Each matching instance is selected by its own
+executable path, including children of unrelated parents. DLLs loaded later can
+contribute; already-hit RVAs in identical images remain shared across instances.
+Process identity is rechecked before attachment. Bounded ETW notifications and
+periodic snapshots reconcile missed notifications; very short-lived processes can
+exit before attachment. Execution before attachment remains unavailable.
+
+ETW is used only with `--watch_processes`. If its APIs deny access or require a
+privilege, the tool reports that watch mode needs elevation and exits. There is
+no administrator precheck, automatic elevation, or privilege adjustment.
+Inaccessible or critical target processes receive an access-denied diagnostic
+and make the capture incomplete. Ctrl+C and duration expiry use the same checked
+restoration and safe-detach path as fixed-cohort collection. The raw RVA format
+and deferred-resolution workflow are unchanged.
 
 On a machine with matching binaries and PDBs:
 

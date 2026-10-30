@@ -32,6 +32,7 @@ TEST(RvaOptionsTest, SymbolFreeDefaultsToRawBinary)
 	auto options = ParseRvaOptions({"--symbol-free", "--", "test.exe"});
 	ASSERT_TRUE(options);
 	ASSERT_TRUE(options->IsSymbolFreeModeEnabled());
+	EXPECT_FALSE(options->IsProcessWatchEnabled());
 	ASSERT_EQ(1u, options->GetExports().size());
 	EXPECT_EQ(CppCoverage::OptionsExportType::Binary, options->GetExports()[0].GetType());
 }
@@ -95,6 +96,7 @@ TEST(RvaOptionsTest, ExistingProcessesRequireExplicitCohortModulesAndBound)
 	    "--excluded_processes", "*excluded*", "--modules", "fixture.dll", "--duration", "2"});
 	ASSERT_TRUE(options);
 	EXPECT_FALSE(options->GetStartInfo());
+	EXPECT_FALSE(options->IsProcessWatchEnabled());
 	ASSERT_TRUE(options->GetDuration());
 	EXPECT_EQ(2u, *options->GetDuration());
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--processes", "*", "--duration", "1"}));
@@ -123,6 +125,20 @@ TEST(RvaOptionsTest, RepeatedProcessFiltersAreIndependentOfModulesAndChildren)
 	EXPECT_FALSE(filter.IsSelected(L"C:\\bin\\shcore.dll"));
 	EXPECT_FALSE(options->IsCoverChildrenModeEnabled());
 	EXPECT_EQ(std::vector<std::wstring>{L"shcore.dll"}, options->GetModulePatterns().GetSelectedPatterns());
+}
+
+TEST(RvaOptionsTest, WatchRequiresExplicitExternalCollection)
+{
+	auto options = ParseRvaOptions({"--symbol-free", "--watch_processes",
+		"--processes", "fixture-*.exe", "--modules", "fixture.dll", "--duration", "2"});
+	ASSERT_TRUE(options);
+	EXPECT_TRUE(options->IsProcessWatchEnabled());
+	EXPECT_FALSE(ParseRvaOptions({"--watch_processes", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--watch_processes", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--watch_processes"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--watch_processes", "--modules", "*", "--duration", "1"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--watch_processes", "--processes", "*", "--duration", "1"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--watch_processes", "--processes", "*", "--modules", "*"}));
 }
 
 TEST(RvaOptionsTest, ExclusionsOnlySelectAllOtherLaunchedProcesses)
@@ -247,4 +263,60 @@ TEST(ExistingProcessTest, ExistingDebuggerAdmissionIsRefused)
 	CppCoverage::ExistingProcess::AdmissionChecks checks;
 	checks.debugged = &AlreadyDebugged;
 	EXPECT_THROW(process.Validate(checks), std::exception);
+}
+
+TEST(ExistingProcessTest, DeniedAdmissionHasAnActionableDiagnostic)
+{
+	auto process = CurrentInstance();
+	CppCoverage::ExistingProcess::AdmissionChecks checks;
+	checks.critical = &UnknownCritical;
+	try
+	{
+		process.Validate(checks);
+		FAIL() << "Admission must fail when critical status cannot be queried";
+	}
+	catch (const std::exception& error)
+	{
+		const auto message = CppCoverage::ProcessAdmissionDiagnostic(error);
+		EXPECT_NE(std::string::npos, message.find("Access denied"));
+		EXPECT_NE(std::string::npos, message.find("critical"));
+	}
+	const std::runtime_error ordinary{"An unrelated admission failure"};
+	EXPECT_EQ(ordinary.what(), CppCoverage::ProcessAdmissionDiagnostic(ordinary));
+}
+
+TEST(ExistingProcessTest, StaleAndExitedLaunchNoticesAreIgnored)
+{
+	std::wstring directory(32768, L'\0');
+	const auto length = GetSystemDirectoryW(directory.data(), static_cast<UINT>(directory.size()));
+	ASSERT_GT(length, 0u);
+	ASSERT_LT(length, directory.size());
+	directory.resize(length);
+	const auto path = directory + L"\\cmd.exe";
+	auto command = L"\"" + path + L"\" /d /c exit 0";
+	STARTUPINFOW startup{};
+	startup.cb = sizeof(startup);
+	PROCESS_INFORMATION info{};
+	ASSERT_TRUE(CreateProcessW(path.c_str(), command.data(), nullptr, nullptr, FALSE,
+	    CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &startup, &info));
+	wil::unique_handle process{info.hProcess}, thread{info.hThread};
+	const auto cleanup = wil::scope_exit([&] {
+		if (WaitForSingleObject(process.get(), 0) == WAIT_TIMEOUT)
+		{
+			TerminateProcess(process.get(), ERROR_PROCESS_ABORTED);
+			WaitForSingleObject(process.get(), 5000);
+		}
+	});
+	FILETIME created{}, exited{}, kernel{}, user{};
+	ASSERT_TRUE(GetProcessTimes(process.get(), &created, &exited, &kernel, &user));
+	auto stale = created;
+	stale.dwLowDateTime ^= 1;
+	CppCoverage::Patterns patterns;
+	patterns.AddSelectedPatterns(L"cmd.exe");
+	EXPECT_NO_THROW(EXPECT_FALSE(CppCoverage::InspectExistingProcess(
+	    patterns, info.dwProcessId, path, 0, stale)));
+	ASSERT_NE(static_cast<DWORD>(-1), ResumeThread(thread.get()));
+	ASSERT_EQ(static_cast<DWORD>(WAIT_OBJECT_0), WaitForSingleObject(process.get(), 10000));
+	EXPECT_NO_THROW(EXPECT_FALSE(CppCoverage::InspectExistingProcess(
+	    patterns, info.dwProcessId, path, 0, created)));
 }

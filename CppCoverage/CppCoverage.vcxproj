@@ -329,6 +329,11 @@
       <Project>{7f6d05ef-deb0-4c64-bd13-a85f46314b91}</Project>
     </ProjectReference>
   </ItemGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalDependencies>Advapi32.lib;Tdh.lib;Rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\PropertySheets\Dependencies.targets" />
@@ -341,6 +346,8 @@
     <ClCompile Include="BreakpointJournal.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClInclude Include="ExistingProcess.hpp" />
     <ClCompile Include="ExistingProcess.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClInclude Include="ProcessWatcher.hpp" />
+    <ClCompile Include="ProcessWatcher.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClInclude Include="ThreadSuspension.hpp" />
     <ClCompile Include="ThreadSuspension.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="DebuggerAttach.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>

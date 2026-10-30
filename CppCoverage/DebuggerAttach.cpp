@@ -20,11 +20,13 @@
 #include "HandleInformation.hpp"
 #include "IDebugEventsHandler.hpp"
 #include "PeImage.hpp"
+#include "ProcessWatcher.hpp"
 #include "ThreadSuspension.hpp"
 #include "Tools/Log.hpp"
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -319,25 +321,41 @@ namespace CppCoverage
 	}
 
 	int Debugger::AttachExisting(
-	    const Patterns& patterns, unsigned durationSeconds, IDebugEventsHandler& handler)
+	    const Patterns& patterns, unsigned durationSeconds, IDebugEventsHandler& handler,
+	    bool watchProcesses)
 	{
 		THROW_HR_IF(E_INVALIDARG, !durationSeconds || !processHandles_.empty());
 		external_ = true;
+		std::unique_ptr<ProcessWatcher> watcher;
+		if (watchProcesses)
+		{
+			watcher = std::make_unique<ProcessWatcher>();
+			watcher->Start();
+		}
 		OwnedHelper helper;
 		const auto control = CalibrateBootstrap(helper);
 		stopRequested.store(false);
 		THROW_LAST_ERROR_IF(!SetConsoleCtrlHandler(&StopCollection, TRUE));
 		auto removeHandler = wil::scope_exit([&] { SetConsoleCtrlHandler(&StopCollection, FALSE); });
 		std::map<DWORD, std::unique_ptr<Connection>> connections;
-		auto snapshot = SnapshotExistingProcesses(patterns, helper.id);
-		LOG_INFO << "Existing-process capture observes execution only after attachment; "
-		            "earlier execution and future launches are not collected";
+		std::unordered_set<DWORD> reportedFailures;
+		auto snapshot = SnapshotExistingProcesses(patterns, helper.id, {}, &reportedFailures);
+		LOG_INFO << "External capture observes execution only after attachment; earlier execution is not collected";
 		size_t nextCandidate = 0;
 		int result = snapshot.failedAdmissions ? 1 : 0;
 		bool stopping = false;
 		bool quiesced = false;
-		bool deadlineStarted = false;
-		std::chrono::steady_clock::time_point deadline{};
+		bool deadlineStarted = watchProcesses;
+		auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{durationSeconds};
+		if (watchProcesses)
+			LOG_INFO << "Process watch started; initial_candidates=" << snapshot.processes.size()
+			         << " duration=" << durationSeconds;
+		std::deque<ProcessWatcher::Event> notices;
+		auto nextSnapshot = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+		auto nextReconciliation = std::chrono::steady_clock::now();
+		auto nextDiscovery = std::chrono::steady_clock::now();
+		bool reconcile = false;
+		bool discoveryStopped = false;
 		DEBUG_EVENT event{};
 		bool pending = false;
 		bool dispatched = false;
@@ -364,13 +382,85 @@ namespace CppCoverage
 					return true;
 			return false;
 		};
+		auto discover = [&] {
+			if (!watcher || stopping || std::chrono::steady_clock::now() < nextDiscovery)
+				return;
+			nextDiscovery = std::chrono::steady_clock::now() + std::chrono::milliseconds{20};
+			watcher->CheckHealth();
+			reconcile |= watcher->TakeReconcileRequest();
+			if (nextCandidate == snapshot.processes.size())
+			{
+				snapshot.processes.clear();
+				nextCandidate = 0;
+			}
+			std::unordered_set<DWORD> skip;
+			for (const auto& pair : connections)
+				skip.insert(pair.first);
+			for (size_t index = nextCandidate; index < snapshot.processes.size(); ++index)
+				skip.insert(snapshot.processes[index].id);
+			if (notices.empty())
+				for (auto& notice : watcher->Drain())
+					notices.push_back(std::move(notice));
+			for (size_t count = 0; count < 8 && !notices.empty() &&
+			    snapshot.processes.size() - nextCandidate < 64; ++count)
+			{
+				auto notice = std::move(notices.front());
+				notices.pop_front();
+				if (!notice.started)
+				{
+					reportedFailures.erase(notice.id);
+					continue;
+				}
+				if (skip.count(notice.id))
+					continue;
+				if (notice.image.empty())
+				{
+					reconcile = true;
+					continue;
+				}
+				try
+				{
+					auto candidate = InspectExistingProcess(
+					    patterns, notice.id, notice.image, helper.id, notice.created);
+					if (candidate)
+					{
+						LOG_DEBUG << "ETW process launch discovered pid=" << candidate->id
+						          << " main_image=" << candidate->path;
+						skip.insert(candidate->id);
+						snapshot.processes.push_back(std::move(*candidate));
+					}
+				}
+				catch (const std::exception& error)
+				{
+					result = 1;
+					if (reportedFailures.insert(notice.id).second)
+						LOG_ERROR << "Process admission failed pid=" << notice.id
+						          << " main_image=" << notice.image << ": " << ProcessAdmissionDiagnostic(error);
+				}
+			}
+			const auto now = std::chrono::steady_clock::now();
+			if ((now >= nextSnapshot || (reconcile && now >= nextReconciliation)) &&
+			    snapshot.processes.size() - nextCandidate < 64)
+			{
+				if (reconcile)
+					LOG_WARNING << "Reconciling process watch after lost or incomplete ETW notifications";
+				auto fresh = SnapshotExistingProcesses(patterns, helper.id, skip, &reportedFailures);
+				if (fresh.failedAdmissions)
+					result = 1;
+				for (auto& candidate : fresh.processes)
+					snapshot.processes.push_back(std::move(candidate));
+				nextSnapshot = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+				nextReconciliation = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+				reconcile = false;
+			}
+		};
 		auto admitNext = [&] {
 			auto candidate = std::move(snapshot.processes[nextCandidate++]);
 			const auto id = candidate.id;
 			auto connection = std::make_unique<Connection>();
 			connection->candidate = std::move(candidate);
 			auto& current = *connection;
-			connections.emplace(id, std::move(connection));
+			THROW_HR_IF(E_UNEXPECTED, !connections.emplace(id, std::move(connection)).second);
 			try
 			{
 				current.candidate.Validate();
@@ -386,8 +476,17 @@ namespace CppCoverage
 			{
 				if (current.attached)
 					throw;
+				if (watchProcesses && Exited(current.candidate.handle.get()))
+				{
+					LOG_WARNING << "Selected process exited before attachment pid=" << id;
+					current.held.Resume();
+					connections.erase(id);
+					return;
+				}
 				result = 1;
-				LOG_ERROR << "Existing process attach failed pid=" << id << ": " << error.what();
+				if (reportedFailures.insert(id).second)
+					LOG_ERROR << "Process attach failed pid=" << id << " main_image="
+					          << current.candidate.path << ": " << ProcessAdmissionDiagnostic(error);
 				current.held.Resume();
 				connections.erase(id);
 			}
@@ -417,6 +516,12 @@ namespace CppCoverage
 				if (stopRequested.load() || (!helper.alive) ||
 				    (deadlineStarted && std::chrono::steady_clock::now() >= deadline))
 					stopping = true;
+				if (stopping && watcher && !discoveryStopped)
+				{
+					watcher->Stop();
+					discoveryStopped = true;
+					watcher->CheckHealth();
+				}
 				if (stopping && nextCandidate < snapshot.processes.size())
 				{
 					LOG_ERROR << "Collection stopped before admitting all selected existing processes";
@@ -526,8 +631,12 @@ namespace CppCoverage
 							if (!outstanding())
 								helper.writer.reset();
 						}
-						else if (helper.ready && nextCandidate < snapshot.processes.size())
-							admitNext();
+						else
+						{
+							discover();
+							if (helper.ready && nextCandidate < snapshot.processes.size())
+								admitNext();
+						}
 						continue;
 					}
 				}
@@ -537,7 +646,7 @@ namespace CppCoverage
 					if (event.dwProcessId == helper.id)
 					{
 						disposition = helper.Dispatch(event);
-						if (!helper.alive && outstanding())
+						if (!helper.alive && (outstanding() || (watchProcesses && !stopping)))
 						{
 							stopping = true;
 							result = 1;
@@ -628,6 +737,18 @@ namespace CppCoverage
 				}
 				THROW_LAST_ERROR_IF(!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, disposition));
 				pending = false;
+				if (watchProcesses && event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT &&
+				    event.dwProcessId != helper.id)
+				{
+					const auto connection = connections.find(event.dwProcessId);
+					if (connection != connections.end() &&
+					    connection->second->exited && connection->second->settled)
+					{
+						completedProcessIds_.erase(connection->first);
+						connections.erase(connection);
+					}
+				}
+				discover();
 				if (!stopping && helper.ready && nextCandidate < snapshot.processes.size())
 					admitNext();
 			}
