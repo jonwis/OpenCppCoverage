@@ -350,6 +350,10 @@ namespace CppCoverage
 			if (boost::istarts_with(filenameStr, pdbStartPath))
 			{
 				auto startIndex = pdbStartPath.size();
+				if (startIndex < filenameStr.size() && !pdbStartPath.empty() &&
+				    pdbStartPath.back() != '\\' &&
+				    filenameStr[startIndex] != '\\')
+					continue;
 				if (startIndex < filenameStr.size() && filenameStr[startIndex] == '\\')
 					++startIndex;
 				auto remainingPath = filenameStr.substr(startIndex);
