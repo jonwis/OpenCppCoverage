@@ -19,7 +19,8 @@ namespace CppCoverage
 		~RvaCoverageRunner();
 		RvaCoverage RunCoverage(const RunCoverageSettings&);
 		RvaCoverage CollectExisting(
-		    const CoverageFilterSettings&, const Patterns&, unsigned durationSeconds);
+		    const CoverageFilterSettings&, const Patterns&, unsigned durationSeconds,
+		    bool watchProcesses = false);
 
 	private:
 		struct State;

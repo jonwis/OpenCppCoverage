@@ -44,8 +44,24 @@ namespace CppCoverage
 		}
 		if (!thread.ownedIncrement && WaitForSingleObject(thread.handle.get(), 0) != WAIT_OBJECT_0)
 		{
-			const DWORD previous = SuspendThread(thread.handle.get());
-			THROW_LAST_ERROR_IF(previous == static_cast<DWORD>(-1));
+			using NativeSuspend = LONG(NTAPI*)(HANDLE, PULONG);
+			static const auto suspend = reinterpret_cast<NativeSuspend>(
+			    GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSuspendThread"));
+			THROW_HR_IF_MSG(E_NOTIMPL, !suspend, "NtSuspendThread is unavailable");
+			ULONG previous = 0;
+			const auto status = suspend(thread.handle.get(), &previous);
+			// A terminating thread can await its EXIT_THREAD debug event before its handle is signaled.
+			constexpr LONG StatusThreadIsTerminating = static_cast<LONG>(0xc000004b);
+			if (status == StatusThreadIsTerminating)
+				return;
+			if (status < 0)
+			{
+				using StatusError = ULONG(NTAPI*)(LONG);
+				static const auto error = reinterpret_cast<StatusError>(
+				    GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError"));
+				THROW_HR_IF_MSG(E_NOTIMPL, !error, "RtlNtStatusToDosError is unavailable");
+				THROW_WIN32_MSG(error(status), "NtSuspendThread failed (NTSTATUS 0x%08lx)", status);
+			}
 			thread.ownedIncrement = true;
 		}
 		Fence(thread);

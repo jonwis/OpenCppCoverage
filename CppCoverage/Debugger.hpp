@@ -40,7 +40,8 @@ namespace CppCoverage
             bool stopOnAssert);
 
 		int Debug(const StartInfo&, IDebugEventsHandler&);
-		int AttachExisting(const Patterns&, unsigned durationSeconds, IDebugEventsHandler&);
+		int AttachExisting(const Patterns&, unsigned durationSeconds, IDebugEventsHandler&,
+		    bool watchProcesses = false);
 		static boost::optional<int> RunOwnedHelper(int argc, const char* const* argv);
 		static DWORD AttachExceptionDisposition(const EXCEPTION_DEBUG_INFO&,
 		    DWORD thread, bool heldOriginalThread, DWORD bootstrapThread, ULONG_PTR bootstrapAddress);

@@ -56,6 +56,8 @@ namespace CppCoverage
 		const StartInfo* GetStartInfo() const;
 		void EnableSymbolFreeMode() { symbolFree_ = true; }
 		bool IsSymbolFreeModeEnabled() const { return symbolFree_; }
+		void EnableProcessWatch() { watchProcesses_ = true; }
+		bool IsProcessWatchEnabled() const { return watchProcesses_; }
 		void SetDuration(uint32_t seconds) { duration_ = seconds; }
 		const boost::optional<uint32_t>& GetDuration() const { return duration_; }
 		void SetResolvePath(const std::filesystem::path& path) { resolvePath_ = path; }
@@ -111,6 +113,7 @@ namespace CppCoverage
 		boost::optional<Patterns> processPatterns_;
 		boost::optional<StartInfo> optionalStartInfo_;
 		bool symbolFree_ = false;
+		bool watchProcesses_ = false;
 		boost::optional<uint32_t> duration_;
 		boost::optional<std::filesystem::path> resolvePath_;
 		std::vector<std::filesystem::path> moduleDirectories_;

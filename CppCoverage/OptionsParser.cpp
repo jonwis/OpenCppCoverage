@@ -455,6 +455,8 @@ namespace CppCoverage
 
 		if (variablesMap.IsOptionSelected(ProgramOptions::SymbolFreeOption))
 			options.EnableSymbolFreeMode();
+		if (variablesMap.IsOptionSelected(ProgramOptions::WatchProcessesOption))
+			options.EnableProcessWatch();
 		if (!variablesMap.GetVariablesMap().at(ProgramOptions::SelectedProcessesOption).defaulted() ||
 		    variablesMap.IsOptionSelected(ProgramOptions::ExcludedProcessesOption))
 		{
@@ -496,6 +498,9 @@ namespace CppCoverage
 			(options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
 			throw Plugin::OptionsParserException("--symbol-free cannot be combined with --resolve or --input_coverage.");
 		const bool external = options.IsSymbolFreeModeEnabled() && !options.GetStartInfo();
+		if (options.IsProcessWatchEnabled() && !external)
+			throw Plugin::OptionsParserException(
+			    "--watch_processes requires --symbol-free collection without a launched program.");
 		if (external)
 		{
 			const auto& values = variablesMap.GetVariablesMap();

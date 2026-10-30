@@ -261,7 +261,8 @@ namespace OpenCppCoverage
 			else if (options.GetDuration())
 			{
 				auto raw = cov::RvaCoverageRunner{}.CollectExisting(
-				    coverageFilterSettings, *options.GetProcessPatterns(), *options.GetDuration());
+				    coverageFilterSettings, *options.GetProcessPatterns(), *options.GetDuration(),
+				    options.IsProcessWatchEnabled());
 				for (const auto& output : options.GetExports())
 				{
 					const auto path = output.GetParameter() ? fs::path{*output.GetParameter()} :

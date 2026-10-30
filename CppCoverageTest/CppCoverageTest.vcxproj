@@ -308,12 +308,18 @@
     <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.exe" />
     <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.pdb" />
   </ItemGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalDependencies>Advapi32.lib;Tdh.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ItemGroup>
     <ClCompile Include="BasicBlockDiscoveryTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="ArchitectureBreakpointTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverageTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaOptionsTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="ProcessWatcherTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
   </ItemGroup>
   <ImportGroup Label="ExtensionTargets">
     <Import Project="..\PropertySheets\Dependencies.targets" />

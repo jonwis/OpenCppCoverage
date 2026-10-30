@@ -19,7 +19,10 @@
 #include <Windows.h>
 #include <wil/resource.h>
 #include <string>
+#include <exception>
+#include <unordered_set>
 #include <vector>
+#include <boost/optional.hpp>
 #include "CppCoverageExport.hpp"
 
 namespace CppCoverage
@@ -58,5 +61,11 @@ namespace CppCoverage
 	};
 
 	CPPCOVERAGE_DLL ExistingProcessSnapshot SnapshotExistingProcesses(
-	    const Patterns&, DWORD ownedHelper);
+	    const Patterns&, DWORD ownedHelper,
+	    const std::unordered_set<DWORD>& skip = {},
+	    std::unordered_set<DWORD>* reportedFailures = nullptr);
+	CPPCOVERAGE_DLL boost::optional<ExistingProcess> InspectExistingProcess(
+	    const Patterns&, DWORD id, const std::wstring& image, DWORD ownedHelper,
+	    const FILETIME& expectedCreation = {});
+	CPPCOVERAGE_DLL std::string ProcessAdmissionDiagnostic(const std::exception&);
 }

@@ -1,10 +1,13 @@
 #include <windows.h>
+#include <sddl.h>
 #include <intrin.h>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <wil/resource.h>
+#include <wil/result.h>
 
 #ifdef _M_ARM64EC
 extern "C" int EmulatedPath();
@@ -36,6 +39,54 @@ extern "C" __declspec(dllexport) __declspec(noinline) int ExceptionPath(int inpu
 
 namespace
 {
+	int WithoutDebugPrivilegeCommand(int argc, char** argv)
+	{
+		if (argc < 4)
+			return 109;
+		wil::unique_handle token;
+		THROW_IF_WIN32_BOOL_FALSE(OpenProcessToken(
+		    GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, token.put()));
+		TOKEN_PRIVILEGES removed{};
+		THROW_IF_WIN32_BOOL_FALSE(LookupPrivilegeValueW(
+		    nullptr, SE_DEBUG_NAME, &removed.Privileges[0].Luid));
+		wil::unique_handle restricted;
+		THROW_IF_WIN32_BOOL_FALSE(CreateRestrictedToken(
+		    token.get(), 0, 0, nullptr, 1, removed.Privileges, 0, nullptr, restricted.put()));
+		std::string command;
+		for (int index = 2; index < argc; ++index)
+		{
+			if (std::strchr(argv[index], '"'))
+				return 94;
+			command += "\"" + std::string{argv[index]} + "\" ";
+		}
+		STARTUPINFOA startup{};
+		startup.cb = sizeof(startup);
+		startup.dwFlags = STARTF_USESTDHANDLES;
+		SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+		wil::unique_hfile input{CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		    &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)};
+		THROW_LAST_ERROR_IF(!input);
+		wil::unique_handle output, error;
+		const auto duplicate = [&](DWORD source, wil::unique_handle& destination) {
+			THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(GetCurrentProcess(), GetStdHandle(source),
+			    GetCurrentProcess(), destination.put(), 0, TRUE, DUPLICATE_SAME_ACCESS));
+		};
+		duplicate(STD_OUTPUT_HANDLE, output);
+		duplicate(STD_ERROR_HANDLE, error);
+		startup.hStdInput = input.get();
+		startup.hStdOutput = output.get();
+		startup.hStdError = error.get();
+		wil::unique_process_information process;
+		THROW_IF_WIN32_BOOL_FALSE(CreateProcessAsUserA(restricted.get(), argv[2], &command[0],
+		    nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process));
+		DWORD code = 114;
+		const auto wait = WaitForSingleObject(process.hProcess, 120000);
+		THROW_LAST_ERROR_IF(wait == WAIT_FAILED);
+		if (wait == WAIT_OBJECT_0)
+			THROW_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(process.hProcess, &code));
+		return static_cast<int>(code);
+	}
+
 	volatile LONG applicationBreaks = 0;
 	volatile LONG applicationExceptions = 0;
 
@@ -183,7 +234,7 @@ namespace
 		return 0;
 	}
 
-	int ExternalWork(int argc, char** argv)
+	int ExternalWork(int argc, char** argv, unsigned accessRestriction)
 	{
 		if (argc < 3)
 			return 85;
@@ -251,6 +302,20 @@ namespace
 			if (!loaderThread)
 				ExitProcess(106);
 		}
+		if (accessRestriction)
+		{
+			PSECURITY_DESCRIPTOR descriptor = nullptr;
+			// The second descriptor permits process queries and synchronization, but denies debugger access.
+			const auto dacl = accessRestriction == 1 ? L"D:" : L"D:(A;;0x00100400;;;WD)";
+			if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+			    dacl, SDDL_REVISION_1, &descriptor, nullptr))
+				return 108;
+			const auto applied = SetKernelObjectSecurity(
+			    GetCurrentProcess(), DACL_SECURITY_INFORMATION, descriptor);
+			LocalFree(descriptor);
+			if (!applied)
+				return 108;
+		}
 		SetEvent(ready);
 		const auto deadline = GetTickCount64() + 120000;
 		HANDLE waits[]{stop, post, load};
@@ -300,6 +365,8 @@ namespace
 
 int main(int argc, char** argv)
 {
+	if (argc > 1 && std::strcmp(argv[1], "--external-no-debug-privilege") == 0)
+		return WithoutDebugPrivilegeCommand(argc, argv);
 	if (argc > 6 && std::strcmp(argv[1], "--external-console") == 0)
 	{
 		SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
@@ -372,7 +439,11 @@ int main(int argc, char** argv)
 		return static_cast<int>(code);
 	}
 	if (argc > 1 && std::strcmp(argv[1], "--external-work") == 0)
-		return ExternalWork(argc, argv);
+		return ExternalWork(argc, argv, 0);
+	if (argc > 1 && std::strcmp(argv[1], "--external-denied") == 0)
+		return ExternalWork(argc, argv, 1);
+	if (argc > 1 && std::strcmp(argv[1], "--external-denied-attach") == 0)
+		return ExternalWork(argc, argv, 2);
 #ifdef _M_ARM64EC
 	if (EmulatedPath() != 31)
 		return 1;

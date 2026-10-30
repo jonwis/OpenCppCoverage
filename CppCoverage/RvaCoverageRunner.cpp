@@ -370,16 +370,17 @@ namespace CppCoverage
 	RvaCoverageRunner::~RvaCoverageRunner() = default;
 
 	RvaCoverage RvaCoverageRunner::CollectExisting(
-	    const CoverageFilterSettings& filters, const Patterns& processes, unsigned durationSeconds)
+	    const CoverageFilterSettings& filters, const Patterns& processes, unsigned durationSeconds,
+	    bool watchProcesses)
 	{
 		state_ = std::make_unique<State>();
 		state_->external = true;
 		state_->processFilter = std::make_unique<ProcessFilter>(processes);
 		state_->filter = std::make_unique<CoverageFilterManager>(
 		    filters, std::vector<UnifiedDiffSettings>{}, std::vector<std::wstring>{}, false);
-		state_->coverage.name = L"Existing processes";
+		state_->coverage.name = watchProcesses ? L"Watched processes" : L"Existing processes";
 		Debugger debugger{false, false, false};
-		state_->coverage.exitCode = debugger.AttachExisting(processes, durationSeconds, *this);
+		state_->coverage.exitCode = debugger.AttachExisting(processes, durationSeconds, *this, watchProcesses);
 		return std::move(state_->coverage);
 	}
 
