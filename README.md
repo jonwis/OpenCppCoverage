@@ -219,6 +219,39 @@ Place PDBs beside the images or configure `_NT_SYMBOL_PATH`.
 Existing HTML, Cobertura, binary, and plugin exporters remain available.
 Resolve raw coverage before merging it with source coverage.
 
+#### View a capture in Visual Studio 2026
+
+On the symbol machine, use PowerShell 7.2 or later:
+
+```powershell
+.\ConvertTo-VsCoverage.ps1 -InputCoverage .\run.cov -ModuleDirectory C:\Build\bin
+```
+
+The script resolves the capture, writes `run.coverage`, and opens it in Visual
+Studio 2026 when installed, otherwise through the Windows file association.
+Use **Code Coverage Results > Import Results** to open the file on another machine.
+Matching binaries and PDBs are required. `_NT_SYMBOL_PATH` supplies symbol servers.
+`-OpenCppCoverage` selects the resolver executable; `-Output` selects the report.
+`-Sources` accepts source filters, and `-SourcePathSubstitution` accepts
+`<pdbStartPath>?<localPath>` mappings for source navigation.
+
+The script finds the tested `dotnet-coverage` version, or installs version
+18.7.0 into ignored `out\tools` using a .NET 8 or later SDK. Installation honors
+configured NuGet sources and credentials; `-NuGetConfigFile` selects an explicit
+configuration. Global tools are unchanged.
+
+Default flow is **resolve, convert, open**. `-Verify` adds a native-to-Cobertura
+round-trip and compares every module/file/line/boolean-hit tuple before publishing
+or opening the report. `-NoOpen` suppresses opening for automation. A failed
+conversion or verification leaves an existing destination report unchanged.
+
+Visual Studio shows explicitly labelled **[file-level coverage]** containers.
+Function and branch coverage are unavailable in the source model. The opt-in
+`cobertura-vs` intermediate preserves recorded source paths and distinguishes
+modules with identical basenames and source files that share a filename.
+Source navigation requires the corresponding local files or source-path substitutions.
+Ordinary Cobertura exports and raw RVA captures are unchanged.
+
 Use the native ARM64 collector for ARM64, ARM64EC, and AMD64-on-ARM64 processes.
 The AMD64 collector supports AMD64 processes on AMD64 Windows.
 The existing symbol-based collection path remains available for x86 and AMD64.

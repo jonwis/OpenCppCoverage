@@ -100,6 +100,8 @@ namespace OpenCppCoverage
 				std::unique_ptr<Exporter::IExporter>(std::make_unique<Exporter::HtmlExporter>( GetTemplateFolder() )));
 			exporters.emplace(cov::OptionsExportType::Cobertura, 
 				std::unique_ptr<Exporter::IExporter>(std::make_unique<Exporter::CoberturaExporter>()));
+			exporters.emplace(cov::OptionsExportType::CoberturaVisualStudio,
+				std::make_unique<Exporter::CoberturaExporter>(true));
 			exporters.emplace(cov::OptionsExportType::Binary,
 				std::unique_ptr<Exporter::IExporter>(std::make_unique<Exporter::BinaryExporter>()));
 			

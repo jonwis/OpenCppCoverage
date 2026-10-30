@@ -33,14 +33,15 @@ namespace Exporter
 	{
 	public:
 		CoberturaExporter() ;
+		explicit CoberturaExporter(bool visualStudio);
 
 		std::filesystem::path GetDefaultPath(const std::wstring& runningCommandFilename) const override;
 		void Export(const Plugin::CoverageData&, const std::filesystem::path& output) override;
 		void Export(const Plugin::CoverageData&, std::wostream&) const;
 
 	private:
+		bool visualStudio_ = false;
 		CoberturaExporter(const CoberturaExporter&) = delete;
 		CoberturaExporter& operator=(const CoberturaExporter&) = delete;
 	};
 }
-

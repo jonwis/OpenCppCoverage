@@ -128,6 +128,14 @@ namespace CppCoverageTest
 			expectedValues);
 	}
 
+	TEST(OptionsParserExportTest, ExportTypesCoberturaVisualStudio)
+	{
+		TestExportTypes(
+			{"cobertura-vs:C:\\reports\\run.xml"},
+			cov::OptionsExport{cov::OptionsExportType::CoberturaVisualStudio,
+				L"cobertura-vs", L"C:\\reports\\run.xml"});
+	}
+
 	//-------------------------------------------------------------------------
 	TEST(OptionsParserExportTest, OutputPath)
 	{
