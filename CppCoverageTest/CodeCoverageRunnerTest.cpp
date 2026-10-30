@@ -194,7 +194,7 @@ namespace CppCoverageTest
 			TestCoverageSharedLib::GetOutputBinaryPath().wstring(), mainSharedLibFile);
 		auto& file = GetFirstFileCoverage(coverageData);
 
-		int line = 57;
+		int line = 56;
 		TestLine(file, line++, true);
 		TestLine(file, line++, true);
 		TestLine(file, line++, true);
