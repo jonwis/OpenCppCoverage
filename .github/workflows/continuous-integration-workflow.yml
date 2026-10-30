@@ -4,19 +4,16 @@ on: [push, pull_request]
 jobs:
   build:
     name: Unit tests
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
-
-      - name: Install third party libraries
-        run: ./InstallThirdPartyLibraries.ps1
+        uses: actions/checkout@v4
 
       - name: Setup MSBuild
-        uses: microsoft/setup-msbuild@v1.0.0
+        uses: microsoft/setup-msbuild@v2
 
       - name: Build solution
-        run: msbuild /m CppCoverage.sln /p:Configuration=Debug /p:Platform=x64
+        run: msbuild /restore /p:RestorePackagesConfig=true /m CppCoverage.sln /p:Configuration=Debug /p:Platform=x64
 
       - name: Run CppCoverageTest
         run: .\x64\Debug\CppCoverageTest.exe --gtest_filter=-CodeCoverageRunnerTest.OptimizedBuild # Require VS2013
@@ -35,3 +32,6 @@ jobs:
 
       - name: Run ToolsTest
         run: .\x64\Debug\ToolsTest.exe
+
+      - name: Verify symbol-free collection and deferred reports
+        run: .\CppCoverageTest\RvaIntegration.ps1 -Tool "$PWD\x64\Debug\OpenCppCoverage.exe" -Fixture "$PWD\x64\Debug\RvaFixture.exe" -Pdb "$PWD\x64\Debug\RvaFixture.pdb" -OutputDirectory "$PWD\out\integration-x64" -ConsoleFixture "$PWD\x64\Debug\TestCoverageConsole.exe"

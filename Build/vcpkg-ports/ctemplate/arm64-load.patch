@@ -1,0 +1,13 @@
+diff --git a/src/base/macros.h b/src/base/macros.h
+--- a/src/base/macros.h
++++ b/src/base/macros.h
+@@ -58,7 +58,8 @@
+ #elif defined(__ppc__) || defined(__ppc64__)
+   // We know they allow unaligned memory access and are big-endian
+ # define UNALIGNED_LOAD32(_p) BSWAP32(*reinterpret_cast<const uint32_t*>(_p))
+-#elif (BYTE_ORDER == 1234) || (_BYTE_ORDER == 1234) || defined(_LITTLE_ENDIAN)
++#elif (BYTE_ORDER == 1234) || (_BYTE_ORDER == 1234) || defined(_LITTLE_ENDIAN) || \
++      defined(_M_ARM64) || defined(_M_ARM64EC)
+   // Use memcpy to align the memory properly
+   inline uint32_t UNALIGNED_LOAD32(const void *p) {
+     uint32_t t;

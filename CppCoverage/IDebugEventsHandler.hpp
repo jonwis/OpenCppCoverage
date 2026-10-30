@@ -42,11 +42,12 @@ namespace CppCoverage
 		virtual void OnLoadDll(HANDLE hProcess, HANDLE hThread, const LOAD_DLL_DEBUG_INFO&);
 		virtual void OnUnloadDll(HANDLE hProcess, HANDLE hThread, const UNLOAD_DLL_DEBUG_INFO&);
 		virtual ExceptionType OnException(HANDLE hProcess, HANDLE hThread, const EXCEPTION_DEBUG_INFO&);
+		// The event's process is stopped until this callback returns.
+		virtual void OnBeforeContinue(HANDLE hProcess);
 		
 	private:
 		IDebugEventsHandler(const IDebugEventsHandler&) = delete;
 		IDebugEventsHandler& operator=(const IDebugEventsHandler&) = delete;
 	};	
 }
-
 

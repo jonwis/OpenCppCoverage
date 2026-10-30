@@ -67,6 +67,10 @@ namespace CppCoverage
 		{
 			return variables_map_;
 		}
+		const VariableMap& GetVariablesMap() const
+		{
+			return variables_map_;
+		}
 
 	  private:
 		ProgramOptionsVariablesMap(const ProgramOptionsVariablesMap&) = delete;

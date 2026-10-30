@@ -1,0 +1,31 @@
+{
+  "name": "opencppcoverage",
+  "version-string": "0.9.9",
+  "builtin-baseline": "3af1d1e60af2b2abf55760538cd607829029b07a",
+  "dependencies": [
+    "boost-algorithm",
+    "boost-container",
+    "boost-iostreams",
+    "boost-locale",
+    "boost-log",
+    "boost-optional",
+    "boost-program-options",
+    "boost-property-tree",
+    "boost-range",
+    "boost-regex",
+    "boost-spirit",
+    "boost-uuid",
+    {
+      "name": "capstone",
+      "default-features": false,
+      "features": ["arm64", "x86"]
+    },
+    "ctemplate",
+    "gtest",
+    "wil",
+    {
+      "name": "protobuf",
+      "default-features": false
+    }
+  ]
+}

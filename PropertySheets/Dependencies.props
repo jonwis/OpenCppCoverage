@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <VcpkgRoot Condition="'$(VcpkgRoot)'=='' and Exists('$(VSInstallDir)VC\vcpkg\scripts\buildsystems\msbuild\vcpkg.props')">$(VSInstallDir)VC\vcpkg\</VcpkgRoot>
+    <VcpkgRoot Condition="'$(VcpkgRoot)'=='' and Exists('$(VCPKG_ROOT)\scripts\buildsystems\msbuild\vcpkg.props')">$(VCPKG_ROOT)\</VcpkgRoot>
+    <VcpkgEnableManifest>true</VcpkgEnableManifest>
+    <VcpkgManifestRoot>$(MSBuildThisFileDirectory)..\</VcpkgManifestRoot>
+    <VcpkgInstalledDir>$(MSBuildThisFileDirectory)..\vcpkg_installed\$(Platform)\</VcpkgInstalledDir>
+    <VcpkgAdditionalInstallOptions>$(VcpkgAdditionalInstallOptions) "--overlay-ports=$(MSBuildThisFileDirectory)..\Build\vcpkg-ports"</VcpkgAdditionalInstallOptions>
+    <VcpkgHostTriplet Condition="'$(VcpkgHostTriplet)'=='' and '$(PROCESSOR_ARCHITECTURE)'=='ARM64'">arm64-windows</VcpkgHostTriplet>
+    <VcpkgHostTriplet Condition="'$(VcpkgHostTriplet)'==''">x64-windows</VcpkgHostTriplet>
+  </PropertyGroup>
+  <Import Project="$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.props" Condition="'$(VcpkgPropsImported)'!='true' and Exists('$(VcpkgRoot)\scripts\buildsystems\msbuild\vcpkg.props')" />
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <PreprocessorDefinitions>BOOST_ALL_NO_LIB;BOOST_ALL_DYN_LINK;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

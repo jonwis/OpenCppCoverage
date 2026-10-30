@@ -32,10 +32,9 @@
 #include "ProtoBuff.hpp"
 #include "../InvalidOutputFileException.hpp"
 
-namespace pb = ProtoBuff;
-
 namespace Exporter
 {
+	namespace pb = ProtoBuff;
 	namespace
 	{
 		//---------------------------------------------------------------------

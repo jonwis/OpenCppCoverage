@@ -24,11 +24,12 @@ namespace TestCoverageConsole
 	void RunTestBasic();
 	void RunChildProcesses(int argc, _TCHAR* argv[]);
 	void UnloadReloadDll();
+	void RunRvaAggregation(int argc, _TCHAR* argv[]);
 
 	//-------------------------------------------------------------------------
 	inline int GetTestBasicLine()
 	{
-		return 32;
+		return 31;
 	}
 
 	//-------------------------------------------------------------------------

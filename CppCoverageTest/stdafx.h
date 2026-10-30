@@ -18,3 +18,13 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <boost/optional.hpp>
+
+namespace boost
+{
+	template <typename T>
+	void PrintTo(const optional<T>& value, std::ostream* stream)
+	{
+		*stream << (value ? testing::PrintToString(*value) : "(none)");
+	}
+}

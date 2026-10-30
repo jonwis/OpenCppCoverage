@@ -24,9 +24,6 @@
 #include <filesystem>
 #include <boost/algorithm/string.hpp>
 
-#include <Poco/Process.h>
-#include <Poco/Pipe.h>
-#include <Poco/PipeStream.h>
 
 namespace fs = std::filesystem;
 
@@ -60,14 +57,11 @@ namespace TestHelper
 	std::string RunProcess(const fs::path& program,
 	                       const std::vector<std::string>& args)
 	{
-		Poco::Pipe outPipe;
-		auto handle = Poco::Process::launch(
-		    program.string(), args, nullptr, &outPipe, nullptr);
-		Poco::PipeInputStream istr(outPipe);
-		std::string content{std::istreambuf_iterator<char>(istr),
-		                    std::istreambuf_iterator<char>()};
-
-		int exitCode = handle.wait();
+		std::vector<std::wstring> arguments;
+		for (const auto& argument : args)
+			arguments.push_back(Tools::LocalToWString(argument));
+		std::string content;
+		const auto exitCode = Tools::RunProcess(program, arguments, &content);
 		if (exitCode)
 			throw std::runtime_error("Error when running: " + program.string() +
 			                         " " + content);
@@ -82,7 +76,8 @@ namespace TestHelper
 		               "Installer" / "vswhere.exe";
 
 		std::vector<std::string> args = {
-		    "-latest", "-format", "value", "-property", "installationPath"};
+		    "-latest", "-products", "*", "-format", "value",
+		    "-property", "installationPath"};
 		std::string value = RunProcess(vswhere, args);
 		boost::trim(value);
 		fs::path installerPath{value};

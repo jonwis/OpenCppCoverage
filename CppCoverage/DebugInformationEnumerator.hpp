@@ -17,6 +17,9 @@
 #pragma once
 
 #include <filesystem>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 #include "CppCoverageExport.hpp"
 #include "SubstitutePdbSourcePath.hpp"
@@ -35,10 +38,12 @@ namespace CppCoverage
 		{
 			Line(unsigned long lineNumber,
 			     int64_t virtualAddress,
-			     unsigned long symbolIndex)
+			     unsigned long symbolIndex,
+			     unsigned long length = 0)
 			    : lineNumber_{lineNumber},
+			      symbolIndex_{symbolIndex},
 			      virtualAddress_{virtualAddress},
-			      symbolIndex_{symbolIndex}
+			      length_{length}
 			{
 			}
 			Line(const Line&) = default;
@@ -48,6 +53,7 @@ namespace CppCoverage
 			unsigned long lineNumber_;
 			unsigned long symbolIndex_;
 			int64_t virtualAddress_;
+			unsigned long length_;
 		};
 
 		virtual ~IDebugInformationHandler() = default;
@@ -61,6 +67,8 @@ namespace CppCoverage
 	{
 	  public:
 		explicit DebugInformationEnumerator(const std::vector<SubstitutePdbSourcePath>&);
+		DebugInformationEnumerator(const std::vector<SubstitutePdbSourcePath>&,
+		                           const std::wstring& symbolSearchPath);
 		bool Enumerate(const std::filesystem::path&,
 		               IDebugInformationHandler&);
 
@@ -75,5 +83,6 @@ namespace CppCoverage
 
 		std::vector<IDebugInformationHandler::Line> lines_;
 		const std::vector<SubstitutePdbSourcePath> substitutePdbSourcePaths_;
+		const std::wstring symbolSearchPath_;
 	};
 }

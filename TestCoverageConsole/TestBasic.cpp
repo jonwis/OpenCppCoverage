@@ -15,7 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "TestBasic.hpp"
-#include <Poco/Process.h>
 #include <iostream>
 #include <windows.h>
 
@@ -46,13 +45,17 @@ namespace TestCoverageConsole
 			throw std::runtime_error("Invalid number of arguments.");
 		if (argv[1] != TestCoverageConsole::TestChildProcess)
 			throw std::runtime_error("Invalid argument.");
+		if (argc > 2 && std::wstring{argv[2]} == L"--rva-aggregate")
+		{
+			RunRvaAggregation(argc, argv);
+			return;
+		}
 
 		for (int i = 2; i < argc; ++i)
 		{
 			auto argument = Tools::ToLocalString(argv[i]);
 			std::cout << "Start: " << outputBinaryPath << " with " << argument << std::endl;
-			auto handle = Poco::Process::launch(outputBinaryPath.string(), std::vector<std::string>{argument});
-			handle.wait();
+			Tools::RunProcess(outputBinaryPath, {argv[i]});
 		}
 	}
 

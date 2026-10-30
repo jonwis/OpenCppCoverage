@@ -19,6 +19,10 @@
 
 namespace CppCoverage
 {
+	void IDebugEventsHandler::OnBeforeContinue(HANDLE)
+	{
+	}
+
 	//-------------------------------------------------------------------------
 	void IDebugEventsHandler::OnCreateProcess(const CREATE_PROCESS_DEBUG_INFO&) 
 	{

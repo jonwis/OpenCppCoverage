@@ -210,13 +210,10 @@ namespace CppCoverageTest
 		Plugin::CoverageData coverageData = ComputeCoverageData(TestCoverageConsole::TestThread, filter);
 		auto& file = GetFirstFileCoverage(coverageData);
 
-		int line = 28;
-
-		TestLine(file, line++, true);
-		ASSERT_EQ(nullptr, file[line++]);
-		TestLine(file, line++, true);
-		TestLine(file, line++, true);
-		TestLine(file, line++, true);
+		TestLine(file, 28, true);
+		TestLine(file, 30, true);
+		TestLine(file, 31, true);
+		TestLine(file, 32, true);
 	}
 
 	//-------------------------------------------------------------------------

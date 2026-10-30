@@ -1,0 +1,51 @@
+Microsoft Debug Interface Access (DIA) runtime
+msdia140.dll, file version 14.44.35215.0 (x86, x64, ARM64)
+Publisher: Microsoft Corporation
+
+The Microsoft DLL is supplied unmodified from the Visual Studio 2022 DIA SDK.
+Microsoft retains ownership of the DLL. This notice does not change the licenses
+of OpenCppCoverage or the Microsoft DLL.
+
+Redistribution
+
+Microsoft lists these architecture-specific DLLs as Distributable Code for
+Visual Studio 2022 Community, Professional, and Enterprise:
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution#dia-sdk
+
+The application developer's redistribution grant requires a valid license for
+one of those Visual Studio products. Installing Build Tools alone does not
+establish that entitlement. The applicable Visual Studio license controls;
+the following summarizes its Distributable Code conditions:
+
+- Distribute the object-code DLL unmodified, with an application that adds
+  significant primary functionality. Permitted downstream distributors may
+  copy the DLL as part of that application.
+- Require distributors and external end users to agree to terms that protect
+  the Distributable Code at least as much as the applicable Microsoft agreement.
+  Include the required downstream terms and obtain that agreement before
+  distribution; this notice is not a substitute for the required agreement.
+- Preserve Microsoft's and its suppliers' notices. Observe the applicable
+  restrictions on reverse engineering and circumventing technical limitations,
+  including the exceptions stated in the Microsoft agreement.
+- Do not distribute Preview, Pre-release, or Beta components. Do not use
+  Microsoft's trademarks in application names or imply Microsoft endorsement.
+- Do not modify or distribute the source code of Distributable Code so that it
+  becomes subject to an Excluded License, as defined in the Microsoft agreement.
+- The Professional/Enterprise agreement also requires the distributor to
+  indemnify, defend, and hold Microsoft harmless for application-related claims,
+  except claims based solely on the Distributable Code.
+
+Governing Microsoft agreements
+
+Community 2022, section 4 (Distributable Code):
+https://visualstudio.microsoft.com/license-terms/vs2022-ga-community/
+
+Professional/Enterprise 2022, section 5 (Distributable Code):
+https://visualstudio.microsoft.com/license-terms/vs2022-ga-proenterprise/
+
+Build Tools usage terms (not an independent DIA redistribution grant):
+https://visualstudio.microsoft.com/license-terms/vs2022-ga-diagnosticbuildtools/
+
+Redistributors must satisfy both the applicable Microsoft terms and their
+OpenCppCoverage GPLv3 obligations. The Microsoft agreements do not determine
+whether a particular distribution satisfies GPLv3.

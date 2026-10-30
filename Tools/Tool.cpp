@@ -18,10 +18,11 @@
 #include "Tool.hpp"
 
 #include <boost/optional/optional.hpp>
-#include <cvt/wstring>
-#include <codecvt>
 #include <filesystem>
 #include <system_error>
+#include <array>
+#include <wil/resource.h>
+#include <wil/result.h>
 
 #include "Log.hpp"
 #include "ToolsException.hpp"
@@ -32,6 +33,37 @@ namespace Tools
 {
 	namespace
 	{
+		void AppendArgument(std::wstring& commandLine, const std::wstring& argument)
+		{
+			THROW_HR_IF(E_INVALIDARG, argument.find(L'\0') != std::wstring::npos);
+			commandLine += L"\"";
+			size_t slashes = 0;
+			for (const auto character : argument)
+			{
+				if (character == L'\\')
+				{
+					++slashes;
+					continue;
+				}
+				commandLine.append(character == L'"' ? 2 * slashes + 1 : slashes, L'\\');
+				commandLine += character;
+				slashes = 0;
+			}
+			commandLine.append(2 * slashes, L'\\');
+			commandLine += L"\" ";
+		}
+
+		wil::unique_handle InheritStandardHandle(DWORD kind)
+		{
+			const auto source = GetStdHandle(kind);
+			wil::unique_handle result;
+			if (source && source != INVALID_HANDLE_VALUE)
+				THROW_IF_WIN32_BOOL_FALSE(DuplicateHandle(
+					GetCurrentProcess(), source, GetCurrentProcess(),
+					result.put(), 0, TRUE, DUPLICATE_SAME_ACCESS));
+			return result;
+		}
+
 		//-----------------------------------------------------------------------------
 		fs::path GetExecutablePath()
 		{
@@ -174,5 +206,91 @@ namespace Tools
 
 		// Error can happen when the drive is not ready (DVD for example).
 		return std::filesystem::exists(path, ignoredErrorCode);
+	}
+
+	int RunProcess(
+		const std::filesystem::path& program,
+		const std::vector<std::wstring>& arguments,
+		std::string* output,
+		bool captureStandardError)
+	{
+		std::wstring commandLine;
+		AppendArgument(commandLine, program.wstring());
+		for (const auto& argument : arguments)
+			AppendArgument(commandLine, argument);
+		THROW_HR_IF(E_INVALIDARG, commandLine.size() >= 32767);
+
+		STARTUPINFOEXW startup{};
+		startup.StartupInfo.cb = output ? sizeof(startup) : sizeof(startup.StartupInfo);
+		wil::unique_handle reader, writer, input, error;
+		wil::unique_hlocal attributes;
+		std::array<HANDLE, 3> handles{};
+		bool initialized = false;
+		const auto cleanup = wil::scope_exit([&] {
+			if (initialized)
+				DeleteProcThreadAttributeList(startup.lpAttributeList);
+		});
+		if (output)
+		{
+			output->clear();
+			SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+			THROW_IF_WIN32_BOOL_FALSE(CreatePipe(reader.put(), writer.put(), &security, 0));
+			THROW_IF_WIN32_BOOL_FALSE(SetHandleInformation(reader.get(), HANDLE_FLAG_INHERIT, 0));
+			input = InheritStandardHandle(STD_INPUT_HANDLE);
+			if (!captureStandardError)
+				error = InheritStandardHandle(STD_ERROR_HANDLE);
+			handles[0] = writer.get();
+			size_t count = 1;
+			if (input)
+				handles[count++] = input.get();
+			if (error)
+				handles[count++] = error.get();
+			SIZE_T bytes = 0;
+			InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+			THROW_LAST_ERROR_IF(bytes == 0);
+			attributes.reset(THROW_IF_NULL_ALLOC(LocalAlloc(LMEM_FIXED, bytes)));
+			startup.lpAttributeList = static_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributes.get());
+			THROW_IF_WIN32_BOOL_FALSE(InitializeProcThreadAttributeList(
+				startup.lpAttributeList, 1, 0, &bytes));
+			initialized = true;
+			THROW_IF_WIN32_BOOL_FALSE(UpdateProcThreadAttribute(
+				startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+				handles.data(), count * sizeof(HANDLE), nullptr, nullptr));
+			startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+			startup.StartupInfo.hStdInput = input.get();
+			startup.StartupInfo.hStdOutput = writer.get();
+			startup.StartupInfo.hStdError = captureStandardError ? writer.get() : error.get();
+		}
+		wil::unique_process_information process;
+		THROW_IF_WIN32_BOOL_FALSE(CreateProcessW(
+			program.c_str(), commandLine.data(), nullptr, nullptr, output != nullptr,
+			output ? EXTENDED_STARTUPINFO_PRESENT : 0, nullptr, nullptr,
+			&startup.StartupInfo, &process));
+		writer.reset();
+		input.reset();
+		error.reset();
+		if (output)
+		{
+			std::array<char, 4096> buffer;
+			for (;;)
+			{
+				DWORD read = 0;
+				if (!ReadFile(reader.get(), buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr))
+				{
+					const auto code = GetLastError();
+					THROW_WIN32_IF(code, code != ERROR_BROKEN_PIPE);
+					break;
+				}
+				if (!read)
+					break;
+				output->append(buffer.data(), read);
+			}
+		}
+		const auto wait = WaitForSingleObject(process.hProcess, INFINITE);
+		THROW_LAST_ERROR_IF(wait == WAIT_FAILED);
+		THROW_HR_IF(E_UNEXPECTED, wait != WAIT_OBJECT_0);
+		DWORD code = 0;
+		THROW_IF_WIN32_BOOL_FALSE(GetExitCodeProcess(process.hProcess, &code));
+		return static_cast<int>(code);
 	}
 }

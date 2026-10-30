@@ -48,6 +48,7 @@ namespace CppCoverage
 		, isCoverChildrenModeEnabled_{false}
 		, isAggregateByFileModeEnabled_{true}
 		, isContinueAfterCppExceptionModeEnabled_{false}
+		, isStopOnAssertModeEnabled_{false}
 		, isOptimizedBuildSupportEnabled_{false}
 	{
 		if (startInfo)
@@ -227,6 +228,9 @@ namespace CppCoverage
 		ostr << L"Modules: " << options.modules_ << std::endl;
 		ostr << L"Sources: " << options.sources_ << std::endl;
 		ostr << L"Log Level: " << GetLogLevelStr(options.GetLogLevel()) << std::endl;
+		ostr << L"Symbol-free: " << options.symbolFree_ << std::endl;
+		if (options.resolvePath_)
+			ostr << L"Resolve: " << options.resolvePath_->wstring() << std::endl;
 		ostr << L"Cover Children: " << options.isCoverChildrenModeEnabled_ << std::endl;
 		ostr << L"Aggregate by file: " << options.isAggregateByFileModeEnabled_ << std::endl;
 		ostr << L"Continue after C++ exception: " << options.isContinueAfterCppExceptionModeEnabled_ << std::endl;

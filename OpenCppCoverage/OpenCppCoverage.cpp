@@ -18,6 +18,8 @@
 #include "OpenCppCoverage.hpp"
 
 #include <iostream>
+#include <algorithm>
+#include <wil/result.h>
 
 #include "CppCoverage/CodeCoverageRunner.hpp"
 #include "CppCoverage/CoverageFilterSettings.hpp"
@@ -28,6 +30,12 @@
 #include "CppCoverage/OptionsExport.hpp"
 #include "CppCoverage/RunCoverageSettings.hpp"
 #include "CppCoverage/ExportOptionParser.hpp"
+#include "CppCoverage/RvaCoverageRunner.hpp"
+#include "CppCoverage/RvaCoverageResolver.hpp"
+#include "CppCoverage/RvaCoverage.hpp"
+#include "CppCoverage/CoverageFilterManager.hpp"
+#include "FileFilter/ModuleInfo.hpp"
+#include "FileFilter/FileInfo.hpp"
 
 #include "Exporter/Html/HtmlExporter.hpp"
 #include "Exporter/CoberturaExporter.hpp"
@@ -37,6 +45,8 @@
 #include "Exporter/Plugin/PluginLoader.hpp"
 
 #include "Plugin/Exporter/IExportPlugin.hpp"
+#include "Plugin/Exporter/ModuleCoverage.hpp"
+#include "Plugin/Exporter/FileCoverage.hpp"
 
 #include "Tools/Tool.hpp"
 #include "Tools/Log.hpp"
@@ -124,6 +134,8 @@ namespace OpenCppCoverage
 
 			for (const auto& path : options.GetInputCoveragePaths())
 			{				
+				THROW_HR_IF_MSG(E_INVALIDARG, cov::IsRvaCoverage(path),
+					"RVA coverage requires --resolve before it can be merged with source coverage.");
 				auto errorMsg = "Cannot extract coverage data from " + path.string();
 
 				LOG_INFO << L"Load coverage file: " << path.wstring();
@@ -147,6 +159,31 @@ namespace OpenCppCoverage
 			Tools::SetLoggerMinSeverity(logLevel);
 		}
 
+		Plugin::CoverageData FilterResolvedCoverage(
+			cov::CoverageFilterManager& filters, const Plugin::CoverageData& coverage)
+		{
+			Plugin::CoverageData filtered{coverage.GetName(), coverage.GetExitCode()};
+			for (const auto& module : coverage.GetModules())
+			{
+				auto& outputModule = filtered.AddModule(module->GetPath());
+				FileFilter::ModuleInfo moduleInfo{nullptr, module->GetPath(), nullptr};
+				for (const auto& file : module->GetFiles())
+				{
+					if (!filters.IsSourceFileSelected(file->GetPath().wstring()))
+						continue;
+					auto& outputFile = outputModule.AddFile(file->GetPath());
+					FileFilter::FileInfo fileInfo{file->GetPath(), {}};
+					for (const auto& line : file->GetLines())
+					{
+						FileFilter::LineInfo lineInfo{static_cast<int>(line.GetLineNumber()), 0, 0};
+						if (filters.IsLineSelected(moduleInfo, fileInfo, lineInfo))
+							outputFile.AddLine(line.GetLineNumber(), line.HasBeenExecuted());
+					}
+				}
+			}
+			return filtered;
+		}
+
 		//-----------------------------------------------------------------------------
 		int Run(const cov::Options& options,
 		        const Exporter::ExporterPluginManager& exporterPluginManager,
@@ -164,6 +201,25 @@ namespace OpenCppCoverage
 			cov::CodeCoverageRunner codeCoverageRunner{ warningManager };
 			cov::CoverageFilterSettings coverageFilterSettings{ options.GetModulePatterns(), options.GetSourcePatterns() };
 			auto exitCode = 0;
+			if (options.GetResolvePath())
+			{
+				auto raw = cov::ReadRvaCoverage(*options.GetResolvePath());
+				cov::CoverageFilterManager filters{
+					coverageFilterSettings, options.GetUnifiedDiffSettingsCollection(),
+					options.GetExcludedLineRegexes(), false};
+				raw.modules.erase(std::remove_if(raw.modules.begin(), raw.modules.end(),
+					[&](const cov::RvaModule& module) {
+						return !filters.IsModuleSelected(module.path.wstring());
+					}), raw.modules.end());
+				auto resolvedData = cov::RvaCoverageResolver{}.Resolve(
+					raw, options.GetModuleDirectories(), options.GetSubstitutePdbSourcePaths());
+				auto resolved = FilterResolvedCoverage(filters, resolvedData);
+				cov::CoverageDataMerger merger;
+				if (options.IsAggregateByFileModeEnabled())
+					merger.MergeFileCoverage(resolved);
+				Export(options, exporterPluginManager, resolved);
+				return 0;
+			}
 
 			if (startInfo)
 			{
@@ -182,6 +238,18 @@ namespace OpenCppCoverage
                 runCoverageSettings.SetStopOnAssert(options.IsStopOnAssertModeEnabled());
                 runCoverageSettings.SetMaxUnmatchPathsForWarning(maxUnmatchPathsForWarning);
 				runCoverageSettings.SetOptimizedBuildSupport(options.IsOptimizedBuildSupportEnabled());
+				if (options.IsSymbolFreeModeEnabled())
+				{
+					auto raw = cov::RvaCoverageRunner{}.RunCoverage(runCoverageSettings);
+					for (const auto& output : options.GetExports())
+					{
+						auto path = output.GetParameter()
+							? fs::path{ *output.GetParameter() }
+							: fs::path{ GetDefaultPathPrefix(options) + L".cov" };
+						cov::WriteRvaCoverage(raw, path);
+					}
+					return raw.exitCode;
+				}
 				auto coverageData = codeCoverageRunner.RunCoverage(runCoverageSettings);
 				exitCode = coverageData.GetExitCode();
 				coveraDatas.push_back(std::move(coverageData));

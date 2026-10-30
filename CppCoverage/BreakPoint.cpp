@@ -22,6 +22,7 @@
 
 #include "Tools/Log.hpp"
 #include "Tools/ProcessMemory.hpp"
+#include <wil/result.h>
 
 namespace CppCoverage
 {
@@ -93,17 +94,21 @@ namespace CppCoverage
 	//-------------------------------------------------------------------------
 	void BreakPoint::AdjustEipAfterBreakPointRemoval(HANDLE hThread) const
 	{
+#if defined(_M_ARM64)
+		(void)hThread;
+		THROW_HR_MSG(HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED),
+			"The legacy breakpoint API does not support native ARM64 code.");
+#else
 		CONTEXT lcContext;
 		lcContext.ContextFlags = CONTEXT_ALL;
-		if (!GetThreadContext(hThread, &lcContext))
-			THROW_LAST_ERROR("Error in GetThreadContext", GetLastError());
+		THROW_IF_WIN32_BOOL_FALSE(GetThreadContext(hThread, &lcContext));
 
 #ifdef _WIN64
 		--lcContext.Rip; // Move back one byte
 #else
 		--lcContext.Eip; // Move back one byte
 #endif
-		if (!SetThreadContext(hThread, &lcContext))
-			THROW_LAST_ERROR("Error in SetThreadContext", GetLastError());
+		THROW_IF_WIN32_BOOL_FALSE(SetThreadContext(hThread, &lcContext));
+#endif
 	}
 }
