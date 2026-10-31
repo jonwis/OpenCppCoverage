@@ -10,6 +10,7 @@
 #include <cwchar>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -331,6 +332,8 @@ namespace CppCoverage
 		};
 
 		RvaCoverage coverage;
+		RvaCoverageSampling sampling;
+		unsigned samplePercent = 100;
 		std::unique_ptr<CoverageFilterManager> filter;
 		std::unique_ptr<ProcessFilter> processFilter;
 		ExceptionHandler exceptions;
@@ -342,6 +345,8 @@ namespace CppCoverage
 		void RecordHit(size_t aggregate, size_t index)
 		{
 			auto& block = coverage.modules[aggregate].blocks[index];
+			if (!block.selected || !block.observed)
+				return;
 			if (!block.executed)
 			{
 				block.executed = true;
@@ -369,11 +374,38 @@ namespace CppCoverage
 	RvaCoverageRunner::RvaCoverageRunner() = default;
 	RvaCoverageRunner::~RvaCoverageRunner() = default;
 
+	void RvaCoverageSampling::Select(std::vector<RvaBlock>& blocks, unsigned percent)
+	{
+		THROW_HR_IF_MSG(E_INVALIDARG, percent < 1 || percent > 100, "Invalid sample percentage");
+		for (auto& block : blocks)
+		{
+			block.executed = false;
+			block.selected = percent == 100;
+			block.observed = false;
+		}
+		if (percent == 100 || blocks.empty())
+			return;
+		if (!random_)
+		{
+			std::random_device device;
+			std::seed_seq seed{device(), device(), device(), device()};
+			random_.emplace(seed);
+		}
+		std::vector<size_t> indices(blocks.size());
+		std::iota(indices.begin(), indices.end(), size_t{0});
+		std::shuffle(indices.begin(), indices.end(), *random_);
+		const auto count = (uint64_t{blocks.size()} * percent + 99) / 100;
+		for (size_t i = 0; i < count; ++i)
+			blocks[indices[i]].selected = true;
+	}
+
 	RvaCoverage RvaCoverageRunner::CollectExisting(
 	    const CoverageFilterSettings& filters, const Patterns& processes, unsigned durationSeconds,
-	    bool watchProcesses)
+	    bool watchProcesses, unsigned samplePercent)
 	{
+		THROW_HR_IF_MSG(E_INVALIDARG, samplePercent < 1 || samplePercent > 100, "Invalid sample percentage");
 		state_ = std::make_unique<State>();
+		state_->samplePercent = samplePercent;
 		state_->external = true;
 		state_->processFilter = std::make_unique<ProcessFilter>(processes);
 		state_->filter = std::make_unique<CoverageFilterManager>(
@@ -386,7 +418,10 @@ namespace CppCoverage
 
 	RvaCoverage RvaCoverageRunner::RunCoverage(const RunCoverageSettings& settings)
 	{
+		THROW_HR_IF_MSG(E_INVALIDARG, settings.GetSamplePercent() < 1 ||
+		    settings.GetSamplePercent() > 100, "Invalid sample percentage");
 		state_ = std::make_unique<State>();
+		state_->samplePercent = settings.GetSamplePercent();
 		if (settings.GetProcessPatterns())
 			state_->processFilter = std::make_unique<ProcessFilter>(*settings.GetProcessPatterns());
 		state_->filter = std::make_unique<CoverageFilterManager>(
@@ -553,7 +588,8 @@ namespace CppCoverage
 				module.identity = identity;
 				module.blocks.reserve(discoveredBlocks.size());
 				for (const auto& block : discoveredBlocks)
-					module.blocks.push_back({block, false});
+					module.blocks.push_back({block, false, true, false});
+				state_->sampling.Select(module.blocks, state_->samplePercent);
 				modules.push_back(std::move(module));
 				state_->aggregates.emplace_back();
 			}
@@ -617,6 +653,8 @@ namespace CppCoverage
 			}
 			auto& breakpoint = breakpoints[i];
 			breakpoint.original = prefix;
+			if (!blocks[i].selected)
+				continue;
 			breakpoint.status = ArchitectureBreakpoint::IsApplicationTrap(
 			        block.instructionSet, prefix.data(),
 			        (std::min)(size_t{block.size}, prefix.size()))
@@ -630,8 +668,12 @@ namespace CppCoverage
 		++state_->aggregates[aggregate].liveInstances;
 		auto& installed = inserted.first->second.breakpoints;
 		for (size_t i = 0; i < blocks.size(); ++i)
+		{
+			if (installed[i].status == State::Breakpoint::Status::ApplicationTrap)
+				modules[aggregate].blocks[i].observed = true;
 			if (modules[aggregate].blocks[i].executed)
 				installed[i].status = State::Breakpoint::Status::Uninstalled;
+		}
 		std::vector<ArchitectureBreakpoint> rangePatches;
 		std::vector<ArchitectureBreakpoint*> patches;
 		size_t installedCount = 0;
@@ -644,6 +686,7 @@ namespace CppCoverage
 			}
 			mappedAddress = ReadCodeRange(process, remote, base + blocks[i].block.rva, mapped);
 			rangePatches.clear();
+			const auto firstIndex = i;
 			const auto last = std::lower_bound(
 			    blocks.begin() + i, blocks.end(), mappedAddress + mapped.size() - base,
 			    [](const RvaBlock& block, uint64_t value) { return block.block.rva < value; });
@@ -664,6 +707,9 @@ namespace CppCoverage
 			for (auto& patch : rangePatches)
 				patches.push_back(&patch);
 			ArchitectureBreakpoint::InstallRange(process, mappedAddress, mapped, patches);
+			for (size_t index = firstIndex; index < i; ++index)
+				if (installed[index].status == State::Breakpoint::Status::Installed)
+					modules[aggregate].blocks[index].observed = true;
 		}
 		const PhaseClock finished;
 		LOG_DEBUG << "RVA preparation pid=" << ProcessId(process)

@@ -62,6 +62,7 @@ namespace CppCoverage
 
 			options.add_options()
 				(ProgramOptions::SymbolFreeOption.c_str(), "Collect basic-block RVA coverage without loading symbols. Only binary export is supported.")
+				(ProgramOptions::SamplePercentOption.c_str(), po::value<int>(), "Randomly select 1..100 percent of discovered basic blocks, rounded up. Default 100. Requires --symbol-free collection.")
 				(ProgramOptions::DurationOption.c_str(), po::value<int>(), "Existing-process collection duration in positive whole seconds. Ctrl+C requests an orderly early detach.")
 				(ProgramOptions::WatchProcessesOption.c_str(), "Also attach matching future process launches during existing-process collection. ETW API access failures report when elevation is needed.")
 				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
@@ -142,6 +143,7 @@ namespace CppCoverage
 	const std::string ProgramOptions::ExcludedLineRegexOption = "excluded_line_regex";
 	const std::string ProgramOptions::SubstitutePdbSourcePathOption = "substitute_pdb_source_path";
 	const std::string ProgramOptions::SymbolFreeOption = "symbol-free";
+	const std::string ProgramOptions::SamplePercentOption = "sample-percent";
 	const std::string ProgramOptions::DurationOption = "duration";
 	const std::string ProgramOptions::WatchProcessesOption = "watch_processes";
 	const std::string ProgramOptions::ResolveOption = "resolve";

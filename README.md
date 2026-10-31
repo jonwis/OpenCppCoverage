@@ -129,6 +129,27 @@ execution flags. Source paths and line mappings are added during resolution.
 Collection accepts binary exports and module filters; apply source and line
 filters when resolving.
 
+`--sample-percent` accepts an integer from 1 to 100 for symbol-free collection;
+the default is 100. Collection retains the complete discovered block catalog,
+shuffles its indices, and selects the first `ceil(block_count * percent / 100)`
+sites for each image identity. For example, 33 percent of 10 blocks selects 4.
+Each collection uses fresh randomness without a seed option. At 100 percent,
+all sites are selected without initializing a random generator. The selected
+mask stays fixed across reloads and contributing processes during that collection.
+
+The capture records the actual selected sites and whether each selected site
+was successfully admitted for observation. Only selected sites are instrumented
+or counted as hits; validation still covers the entire catalog. Sampled or
+unobserved captures use RVA format version 2; fully selected and observed captures
+retain version 1, which the reader treats as fully observed.
+
+During resolution, a measured hit covers its source line. A line is uncovered
+only when all overlapping block contributors were observed and none executed.
+Any unselected or unobserved contributor suppresses that negative line, including
+contributors from repeated PDB records for the same file and line. Report
+denominators therefore include measured positives and fully observed negatives,
+not an estimate of coverage for the omitted blocks.
+
 With `--cover_children`, hits are a boolean union across matching images.
 Children and reloaded modules reuse discovery for the same image identity and
 loader function-override values. Blocks already covered are left uninstrumented;

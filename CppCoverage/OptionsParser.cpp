@@ -455,6 +455,13 @@ namespace CppCoverage
 
 		if (variablesMap.IsOptionSelected(ProgramOptions::SymbolFreeOption))
 			options.EnableSymbolFreeMode();
+		if (const auto* percent = variablesMap.GetOptionalValue<int>(ProgramOptions::SamplePercentOption))
+		{
+			if (!options.IsSymbolFreeModeEnabled() || *percent < 1 || *percent > 100)
+				throw Plugin::OptionsParserException(
+				    "--sample-percent requires --symbol-free collection and an integer from 1 to 100.");
+			options.SetSamplePercent(static_cast<unsigned>(*percent));
+		}
 		if (variablesMap.IsOptionSelected(ProgramOptions::WatchProcessesOption))
 			options.EnableProcessWatch();
 		if (!variablesMap.GetVariablesMap().at(ProgramOptions::SelectedProcessesOption).defaulted() ||

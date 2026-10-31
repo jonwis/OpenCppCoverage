@@ -14,6 +14,7 @@
 
 #include "CppCoverage/RvaCoverage.hpp"
 #include "CppCoverage/RvaCoverageResolver.hpp"
+#include "CppCoverage/RvaCoverageRunner.hpp"
 #include "CppCoverage/DebugInformationEnumerator.hpp"
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
@@ -149,6 +150,124 @@ namespace CppCoverageTest
 			EXPECT_EQ(expected.blocks[i].block.instructionSet,
 			          actual.blocks[i].block.instructionSet);
 			EXPECT_EQ(expected.blocks[i].executed, actual.blocks[i].executed);
+			EXPECT_TRUE(actual.blocks[i].selected);
+			EXPECT_TRUE(actual.blocks[i].observed);
+		}
+	}
+
+	TEST_F(RvaCoverageTest, SampledRoundTripPreservesCatalogAndObservationStates)
+	{
+		auto sample = Sample();
+		sample.modules[0].blocks[1].selected = false;
+		sample.modules[0].blocks[1].observed = false;
+		sample.modules[0].blocks.push_back(
+		    {{0x3000, 4, cov::InstructionSet::Arm64}, false, true, false});
+		cov::WriteRvaCoverage(sample, path_);
+		const auto bytes = Bytes();
+		EXPECT_EQ(2, bytes[8]);
+		ASSERT_GE(bytes.size(), 33u);
+		EXPECT_EQ(7, bytes[bytes.size() - 23]);
+		EXPECT_EQ(0, bytes[bytes.size() - 12]);
+		EXPECT_EQ(1, bytes.back());
+		const auto result = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(1u, result.modules.size());
+		ASSERT_EQ(3u, result.modules[0].blocks.size());
+		for (size_t i = 0; i < 3; ++i)
+		{
+			const auto& expected = sample.modules[0].blocks[i];
+			const auto& actual = result.modules[0].blocks[i];
+			EXPECT_EQ(expected.block.rva, actual.block.rva);
+			EXPECT_EQ(expected.block.size, actual.block.size);
+			EXPECT_EQ(expected.block.instructionSet, actual.block.instructionSet);
+			EXPECT_EQ(expected.executed, actual.executed);
+			EXPECT_EQ(expected.selected, actual.selected);
+			EXPECT_EQ(expected.observed, actual.observed);
+		}
+	}
+
+	TEST_F(RvaCoverageTest, VersionTwoRejectsReservedBitsAndInvalidObservationStates)
+	{
+		auto sample = Sample();
+		sample.modules[0].blocks[1].observed = false;
+		cov::WriteRvaCoverage(sample, path_);
+		const auto bytes = Bytes();
+		ASSERT_EQ(2, bytes[8]);
+		for (const uint8_t state : {uint8_t{2}, uint8_t{4}, uint8_t{5},
+		    uint8_t{6}, uint8_t{8}, uint8_t{0xff}})
+		{
+			SCOPED_TRACE(static_cast<unsigned>(state));
+			auto invalid = bytes;
+			invalid.back() = state;
+			Save(invalid);
+			EXPECT_THROW(cov::ReadRvaCoverage(path_), wil::ResultException);
+		}
+		for (const uint8_t state : {uint8_t{0}, uint8_t{1}, uint8_t{3}, uint8_t{7}})
+		{
+			auto valid = bytes;
+			valid.back() = state;
+			Save(valid);
+			const auto result = cov::ReadRvaCoverage(path_);
+			const auto& block = result.modules[0].blocks[1];
+			EXPECT_EQ((state & 1) != 0, block.selected);
+			EXPECT_EQ((state & 2) != 0, block.observed);
+			EXPECT_EQ((state & 4) != 0, block.executed);
+		}
+	}
+
+	TEST_F(RvaCoverageTest, WriterAndResolverRejectInvalidObservationImplications)
+	{
+		for (const auto& state : std::vector<cov::RvaBlock>{
+		    {{0x1000, 4, cov::InstructionSet::Arm64}, true, true, false},
+		    {{0x1000, 4, cov::InstructionSet::Arm64}, false, false, true}})
+		{
+			auto sample = Sample();
+			sample.modules[0].blocks[0] = state;
+			EXPECT_THROW(cov::WriteRvaCoverage(sample, path_), wil::ResultException);
+			EXPECT_THROW(cov::RvaCoverageResolver{}.Resolve(sample, {}, {}),
+			    wil::ResultException);
+		}
+	}
+
+	TEST(RvaCoverageSamplingTest, SelectionRoundsUpWithoutChangingCatalog)
+	{
+		cov::RvaCoverageSampling sampling;
+		for (const size_t size : {size_t{0}, size_t{1}, size_t{2}, size_t{3}, size_t{101}})
+			for (const unsigned percent : {1u, 33u, 50u, 75u, 100u})
+			{
+				SCOPED_TRACE(size);
+				SCOPED_TRACE(percent);
+				std::vector<cov::RvaBlock> blocks;
+				for (size_t i = 0; i < size; ++i)
+					blocks.push_back({{static_cast<uint32_t>(i * 4), 4,
+					    cov::InstructionSet::Arm64}, true});
+				sampling.Select(blocks, percent);
+				const auto selected = std::count_if(blocks.begin(), blocks.end(),
+				    [](const cov::RvaBlock& block) { return block.selected; });
+				EXPECT_EQ((uint64_t{size} * percent + 99) / 100,
+				    static_cast<uint64_t>(selected));
+				ASSERT_EQ(size, blocks.size());
+				for (size_t i = 0; i < size; ++i)
+				{
+					EXPECT_EQ(i * 4, blocks[i].block.rva);
+					EXPECT_EQ(4u, blocks[i].block.size);
+					EXPECT_EQ(cov::InstructionSet::Arm64, blocks[i].block.instructionSet);
+					EXPECT_FALSE(blocks[i].executed);
+					EXPECT_FALSE(blocks[i].observed);
+				}
+			}
+	}
+
+	TEST(RvaCoverageSamplingTest, InvalidPercentageDoesNotChangeCatalog)
+	{
+		cov::RvaCoverageSampling sampling;
+		std::vector<cov::RvaBlock> blocks{
+		    {{0x1000, 4, cov::InstructionSet::Arm64}, true}};
+		for (const unsigned percent : {0u, 101u})
+		{
+			EXPECT_THROW(sampling.Select(blocks, percent), wil::ResultException);
+			EXPECT_TRUE(blocks[0].executed);
+			EXPECT_TRUE(blocks[0].selected);
+			EXPECT_TRUE(blocks[0].observed);
 		}
 	}
 
@@ -240,7 +359,7 @@ namespace CppCoverageTest
 		const size_t blockCount = identity + 66;
 		const size_t firstBlock = blockCount + 4;
 		const std::vector<std::pair<size_t, uint8_t>> mutations{
-		    {0, 0}, {8, 2}, {12, 0xff}, {moduleCount + 3, 0xff},
+		    {0, 0}, {8, 3}, {12, 0xff}, {moduleCount + 3, 0xff},
 		    {modulePath + 4, 0}, {modulePath + 5, 0xd8},
 		    {identity, 0}, {blockCount + 3, 0xff},
 		    {firstBlock + 4, 0}, {firstBlock + 8, 0},
@@ -452,5 +571,65 @@ namespace CppCoverageTest
 			}
 			EXPECT_TRUE(found);
 		}
+	}
+
+	TEST_F(RvaCoverageTest, UnknownContributorsSuppressNegativesAcrossRepeatedLineRecords)
+	{
+		const auto binary = CurrentExecutable();
+		LineCollector collector;
+		ASSERT_TRUE(cov::DebugInformationEnumerator({}).Enumerate(binary, collector));
+		std::map<unsigned long, std::vector<uint32_t>> records;
+		for (const auto& line : collector.lines_)
+			if (line.virtualAddress_ >= 0 && line.lineNumber_ != 0)
+				records[line.lineNumber_].push_back(static_cast<uint32_t>(line.virtualAddress_));
+		auto repeated = records.end();
+		for (auto record = records.begin(); record != records.end(); ++record)
+		{
+			auto& addresses = record->second;
+			std::sort(addresses.begin(), addresses.end());
+			addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+			if (addresses.size() >= 2)
+			{
+				repeated = record;
+				break;
+			}
+		}
+		ASSERT_NE(records.end(), repeated);
+		cov::RvaCoverage raw;
+		cov::RvaModule module;
+		module.path = binary;
+		module.identity = cov::PeImage(binary).Identity();
+		const auto isa = module.identity.machine == 0xaa64
+		    ? cov::InstructionSet::Arm64 : cov::InstructionSet::Amd64;
+		const uint32_t size = isa == cov::InstructionSet::Arm64 ? 4 : 1;
+		ASSERT_GE(repeated->second.back() - repeated->second.front(), size);
+		module.blocks = {
+		    {{repeated->second.front(), size, isa}, false},
+		    {{repeated->second.back(), size, isa}, false, false, false}};
+		raw.modules.push_back(module);
+		for (const bool selected : {false, true})
+			for (const bool observed : {false, true})
+				for (const bool executed : {false, true})
+				{
+					SCOPED_TRACE(selected);
+					SCOPED_TRACE(observed);
+					SCOPED_TRACE(executed);
+					raw.modules[0].blocks[0].executed = executed;
+					raw.modules[0].blocks[1].selected = selected || observed;
+					raw.modules[0].blocks[1].observed = observed;
+					const auto output = cov::RvaCoverageResolver{}.Resolve(raw, {}, {});
+					ASSERT_EQ(1u, output.GetModules().size());
+					const Plugin::LineCoverage* resolved = nullptr;
+					for (const auto& file : output.GetModules()[0]->GetFiles())
+						if (file->GetPath().filename() == fs::path(__FILE__).filename())
+							resolved = (*file)[repeated->first];
+					if (executed || observed)
+					{
+						ASSERT_NE(nullptr, resolved);
+						EXPECT_EQ(executed, resolved->HasBeenExecuted());
+					}
+					else
+						EXPECT_EQ(nullptr, resolved);
+				}
 	}
 }

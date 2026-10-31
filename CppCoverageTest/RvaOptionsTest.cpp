@@ -47,6 +47,38 @@ TEST(RvaOptionsTest, SymbolBasedCollectionRetainsHtmlDefault)
 	EXPECT_EQ(CppCoverage::OptionsExportType::Html, options->GetExports()[0].GetType());
 }
 
+TEST(RvaOptionsTest, SamplingDefaultsToFullAndAcceptsCollectionPercentages)
+{
+	auto full = ParseRvaOptions({"--symbol-free", "--", "test.exe"});
+	ASSERT_TRUE(full);
+	EXPECT_EQ(100u, full->GetSamplePercent());
+	for (const auto* percent : {"1", "33", "50", "75", "100"})
+	{
+		auto options = ParseRvaOptions({"--symbol-free", "--sample-percent", percent,
+		    "--", "test.exe"});
+		ASSERT_TRUE(options);
+		EXPECT_EQ(static_cast<unsigned>(std::stoi(percent)), options->GetSamplePercent());
+	}
+	auto external = ParseRvaOptions({"--symbol-free", "--sample-percent", "50",
+	    "--processes", "*", "--modules", "*", "--duration", "1"});
+	ASSERT_TRUE(external);
+	EXPECT_EQ(50u, external->GetSamplePercent());
+}
+
+TEST(RvaOptionsTest, SamplingRejectsInvalidPercentagesAndOtherModes)
+{
+	for (const auto* percent : {"0", "-1", "101"})
+		EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--sample-percent", percent,
+		    "--", "test.exe"}));
+	for (const auto* percent : {"33.5", "abc", "999999999999"})
+		EXPECT_THROW(ParseRvaOptions({"--symbol-free", "--sample-percent", percent,
+		    "--", "test.exe"}), std::exception);
+	EXPECT_FALSE(ParseRvaOptions({"--sample-percent", "100", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--sample-percent", "50"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--resolve", __FILE__,
+	    "--sample-percent", "50"}));
+}
+
 TEST(RvaOptionsTest, CollectionRejectsReportsAndSourceFilters)
 {
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--export_type", "html", "--", "test.exe"}));

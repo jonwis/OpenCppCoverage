@@ -97,8 +97,9 @@ namespace CppCoverage
 					     block != module_.blocks.end() && block->block.rva < end;
 					     ++block)
 					{
-						auto& executed = result[line.lineNumber_];
-						executed = executed || block->executed;
+						auto& state = result[line.lineNumber_];
+						state.executed = state.executed || block->executed;
+						state.allObserved = state.allObserved && block->observed;
 					}
 				}
 			}
@@ -109,16 +110,27 @@ namespace CppCoverage
 				{
 					if (file.second.empty())
 						continue;
-					auto& output = output_.AddFile(file.first);
+					Plugin::FileCoverage* output = nullptr;
 					for (const auto& line : file.second)
-						output.AddLine(line.first, line.second);
+					{
+						if (!line.second.executed && !line.second.allObserved)
+							continue;
+						if (!output)
+							output = &output_.AddFile(file.first);
+						output->AddLine(line.first, line.second.executed);
+					}
 				}
 			}
 
 		  private:
 			const RvaModule& module_;
 			Plugin::ModuleCoverage& output_;
-			std::map<std::filesystem::path, std::map<unsigned long, bool>> files_;
+			struct LineState
+			{
+				bool executed = false;
+				bool allObserved = true;
+			};
+			std::map<std::filesystem::path, std::map<unsigned long, LineState>> files_;
 		};
 	}
 
@@ -134,6 +146,9 @@ namespace CppCoverage
 			uint64_t end = 0;
 			for (const auto& entry : module.blocks)
 			{
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+				    (entry.executed && !entry.observed) || (entry.observed && !entry.selected),
+				    "Invalid RVA block observation state for resolution");
 				const auto& block = entry.block;
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), block.size == 0 || block.rva < end ||
 				    uint64_t{block.rva} + block.size > module.identity.sizeOfImage, "Invalid RVA block ranges for resolution");

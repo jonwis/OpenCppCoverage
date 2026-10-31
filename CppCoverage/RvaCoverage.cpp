@@ -16,7 +16,8 @@ namespace CppCoverage
 	namespace
 	{
 		constexpr std::array<uint8_t, 8> Magic{{'O', 'C', 'C', 'R', 'V', 'A', 'C', 0}};
-		constexpr uint32_t Version = 1;
+		constexpr uint32_t LegacyVersion = 1;
+		constexpr uint32_t SampledVersion = 2;
 		constexpr size_t MaxFileSize = 256 * 1024 * 1024;
 		constexpr uint32_t MaxStringLength = 32767;
 		constexpr uint32_t MaxModules = 65536;
@@ -67,6 +68,9 @@ namespace CppCoverage
 			uint64_t end = 0;
 			for (const auto& entry : module.blocks)
 			{
+				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+				    (entry.executed && !entry.observed) || (entry.observed && !entry.selected),
+				    "invalid block observation state");
 				const auto& block = entry.block;
 				const auto instructionSet = static_cast<uint16_t>(block.instructionSet);
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), (instructionSet != 0x8664 && instructionSet != 0xaa64) ||
@@ -138,8 +142,13 @@ namespace CppCoverage
 		ValidateString(coverage.name, false);
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), coverage.modules.size() > MaxModules, "too many modules");
 		Writer writer;
+		uint32_t version = LegacyVersion;
+		for (const auto& module : coverage.modules)
+			for (const auto& block : module.blocks)
+				if (!block.selected || !block.observed)
+					version = SampledVersion;
 		writer.bytes.insert(writer.bytes.end(), Magic.begin(), Magic.end());
-		writer.Integer(Version, 4);
+		writer.Integer(version, 4);
 		writer.String(coverage.name);
 		writer.Integer(static_cast<uint32_t>(coverage.exitCode), 4);
 		writer.Integer(static_cast<uint32_t>(coverage.modules.size()), 4);
@@ -165,7 +174,9 @@ namespace CppCoverage
 				writer.Integer(block.block.rva, 4);
 				writer.Integer(block.block.size, 4);
 				writer.Integer(static_cast<uint16_t>(block.block.instructionSet), 2);
-				writer.Integer(block.executed ? 1 : 0, 1);
+				writer.Integer(version == LegacyVersion ? (block.executed ? 1 : 0) :
+				    (block.selected ? 1 : 0) | (block.observed ? 2 : 0) |
+				    (block.executed ? 4 : 0), 1);
 			}
 		}
 		std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -190,7 +201,9 @@ namespace CppCoverage
 		Reader reader(bytes);
 		for (const auto byte : Magic)
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), reader.Integer(1) != byte, "incorrect format signature");
-		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), reader.Integer(4) != Version, "unsupported version");
+		const auto version = reader.Integer(4);
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+		    version != LegacyVersion && version != SampledVersion, "unsupported version");
 		RvaCoverage coverage;
 		coverage.name = reader.String(false);
 		const auto exitCode = reader.Integer(4);
@@ -226,9 +239,19 @@ namespace CppCoverage
 				block.block.size = reader.Integer(4);
 				block.block.instructionSet =
 				    static_cast<InstructionSet>(reader.Integer(2));
-				const auto executed = reader.Integer(1);
-				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), executed > 1, "invalid executed state");
-				block.executed = executed != 0;
+				const auto state = reader.Integer(1);
+				if (version == LegacyVersion)
+				{
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), state > 1, "invalid executed state");
+					block.executed = state != 0;
+				}
+				else
+				{
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), (state & ~7u) != 0, "invalid block state bits");
+					block.selected = (state & 1) != 0;
+					block.observed = (state & 2) != 0;
+					block.executed = (state & 4) != 0;
+				}
 				module.blocks.push_back(block);
 			}
 			ValidateModule(module);

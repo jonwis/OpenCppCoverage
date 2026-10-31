@@ -236,6 +236,7 @@ namespace OpenCppCoverage
 				    options.GetSubstitutePdbSourcePaths());
 
 				runCoverageSettings.SetCoverChildren(options.IsCoverChildrenModeEnabled());
+				runCoverageSettings.SetSamplePercent(options.GetSamplePercent());
 				if (options.GetProcessPatterns())
 					runCoverageSettings.SetProcessPatterns(*options.GetProcessPatterns());
 				runCoverageSettings.SetContinueAfterCppException(options.IsContinueAfterCppExceptionModeEnabled());
@@ -262,7 +263,7 @@ namespace OpenCppCoverage
 			{
 				auto raw = cov::RvaCoverageRunner{}.CollectExisting(
 				    coverageFilterSettings, *options.GetProcessPatterns(), *options.GetDuration(),
-				    options.IsProcessWatchEnabled());
+				    options.IsProcessWatchEnabled(), options.GetSamplePercent());
 				for (const auto& output : options.GetExports())
 				{
 					const auto path = output.GetParameter() ? fs::path{*output.GetParameter()} :

@@ -56,6 +56,8 @@ namespace CppCoverage
 		const StartInfo* GetStartInfo() const;
 		void EnableSymbolFreeMode() { symbolFree_ = true; }
 		bool IsSymbolFreeModeEnabled() const { return symbolFree_; }
+		void SetSamplePercent(unsigned percent) { samplePercent_ = percent; }
+		unsigned GetSamplePercent() const { return samplePercent_; }
 		void EnableProcessWatch() { watchProcesses_ = true; }
 		bool IsProcessWatchEnabled() const { return watchProcesses_; }
 		void SetDuration(uint32_t seconds) { duration_ = seconds; }
@@ -113,6 +115,7 @@ namespace CppCoverage
 		boost::optional<Patterns> processPatterns_;
 		boost::optional<StartInfo> optionalStartInfo_;
 		bool symbolFree_ = false;
+		unsigned samplePercent_ = 100;
 		bool watchProcesses_ = false;
 		boost::optional<uint32_t> duration_;
 		boost::optional<std::filesystem::path> resolvePath_;

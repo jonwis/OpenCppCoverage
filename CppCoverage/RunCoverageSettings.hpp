@@ -42,6 +42,8 @@ namespace CppCoverage
 		RunCoverageSettings& operator=(const RunCoverageSettings&) = delete;
 
 		void SetCoverChildren(bool);
+		void SetSamplePercent(unsigned percent) { samplePercent_ = percent; }
+		unsigned GetSamplePercent() const { return samplePercent_; }
 		void SetProcessPatterns(const Patterns& patterns) { processPatterns_ = patterns; }
 		const boost::optional<Patterns>& GetProcessPatterns() const { return processPatterns_; }
 		void SetContinueAfterCppException(bool);
@@ -62,6 +64,7 @@ namespace CppCoverage
 
 	private:
 		StartInfo startInfo_;
+		unsigned samplePercent_ = 100;
 		boost::optional<Patterns> processPatterns_;
 		CoverageFilterSettings coverageFilterSettings_;
 		std::vector<UnifiedDiffSettings> unifiedDiffSettings_;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <optional>
+#include <random>
 
 #include "CppCoverageExport.hpp"
 #include "IDebugEventsHandler.hpp"
@@ -12,6 +14,15 @@ namespace CppCoverage
 	class CoverageFilterSettings;
 	class Patterns;
 
+	class CPPCOVERAGE_DLL RvaCoverageSampling
+	{
+	public:
+		void Select(std::vector<RvaBlock>& blocks, unsigned percent);
+
+	private:
+		std::optional<std::mt19937> random_;
+	};
+
 	class CPPCOVERAGE_DLL RvaCoverageRunner : private IDebugEventsHandler
 	{
 	public:
@@ -20,7 +31,7 @@ namespace CppCoverage
 		RvaCoverage RunCoverage(const RunCoverageSettings&);
 		RvaCoverage CollectExisting(
 		    const CoverageFilterSettings&, const Patterns&, unsigned durationSeconds,
-		    bool watchProcesses = false);
+		    bool watchProcesses = false, unsigned samplePercent = 100);
 
 	private:
 		struct State;

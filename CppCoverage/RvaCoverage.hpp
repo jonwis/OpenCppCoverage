@@ -14,6 +14,8 @@ namespace CppCoverage
 	{
 		BasicBlock block;
 		bool executed = false;
+		bool selected = true;
+		bool observed = true;
 	};
 
 	struct RvaModule
