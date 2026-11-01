@@ -20,6 +20,17 @@
 
 namespace TestCoverageOptimizedBuild
 {
+	__declspec(noinline) int CfgReportCallee(int value)
+	{
+		return value + 7;
+	}
+
+	__declspec(dllexport) __declspec(noinline) int CfgReportChain(int value)
+	{
+		volatile int result = CfgReportCallee(value);
+		return result + 3;
+	}
+
 	//-------------------------------------------------------------------------
 	std::filesystem::path GetMainCppPath()
 	{

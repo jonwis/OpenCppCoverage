@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <algorithm>
+#include <deque>
 #include <iomanip>
 #include <limits>
 #include <locale>
@@ -13,6 +14,90 @@
 
 namespace CppCoverage
 {
+	CfgDominance AnalyzeCfgDominance(size_t count,
+		const std::vector<std::pair<size_t, size_t>>& edges, const std::vector<size_t>& roots)
+	{
+		if (count > 512 || edges.size() > 1536 || roots.size() > count)
+			throw std::invalid_argument("CFG dominance input exceeds its limits");
+		CfgDominance result;
+		result.reachable.resize(count, false);
+		result.dominators.resize(count, std::vector<bool>(count, false));
+		std::vector<std::vector<size_t>> predecessors(count), successors(count);
+		for (const auto& edge : edges)
+		{
+			if (edge.first >= count || edge.second >= count)
+				throw std::invalid_argument("Invalid CFG dominance edge");
+			predecessors[edge.second].push_back(edge.first);
+			successors[edge.first].push_back(edge.second);
+		}
+		std::vector<bool> isRoot(count, false);
+		std::deque<size_t> pending;
+		for (const auto root : roots)
+		{
+			if (root >= count)
+				throw std::invalid_argument("Invalid CFG dominance root");
+			isRoot[root] = true;
+			if (!result.reachable[root])
+			{
+				result.reachable[root] = true;
+				pending.push_back(root);
+			}
+		}
+		while (!pending.empty())
+		{
+			const auto from = pending.front();
+			pending.pop_front();
+			for (const auto to : successors[from])
+				if (!result.reachable[to])
+				{
+					result.reachable[to] = true;
+					pending.push_back(to);
+				}
+		}
+		for (size_t i = 0; i < count; ++i)
+			if (result.reachable[i])
+			{
+				result.dominators[i] = isRoot[i] ? std::vector<bool>(count, false) : result.reachable;
+				result.dominators[i][i] = true;
+			}
+		bool changed = true;
+		size_t work = 0, passes = 0;
+		while (changed && ++passes <= count + 1)
+		{
+			changed = false;
+			for (size_t i = 0; i < count; ++i)
+			{
+				if (!result.reachable[i] || isRoot[i])
+					continue;
+				auto next = result.reachable;
+				for (const auto predecessor : predecessors[i])
+				{
+					if (!result.reachable[predecessor])
+						continue;
+					work += count;
+					if (work > 8000000)
+					{
+						result.workExhausted = true;
+						result.dominators.assign(count, std::vector<bool>(count, false));
+						return result;
+					}
+					for (size_t j = 0; j < count; ++j)
+						next[j] = next[j] && result.dominators[predecessor][j];
+				}
+				next[i] = true;
+				if (next != result.dominators[i])
+				{
+					result.dominators[i] = std::move(next);
+					changed = true;
+				}
+			}
+		}
+		result.workExhausted = changed;
+		if (changed)
+			result.dominators.assign(count, std::vector<bool>(count, false));
+		return result;
+	}
+
 	namespace
 	{
 		constexpr size_t MaxNodes = 512;
@@ -168,60 +253,22 @@ namespace CppCoverage
 
 			std::vector<std::pair<uint32_t, uint32_t>> implications;
 			std::map<uint32_t, uint32_t> immediateDominators;
+			std::vector<bool> reachable(nodes.size(), false);
 			if (exclusion.empty())
 			{
 				const auto count = nodes.size();
-				std::vector<std::vector<size_t>> predecessors(count);
+				std::vector<std::pair<size_t, size_t>> normalEdges;
 				for (const auto& edge : edges)
 					if (std::get<2>(edge) != FlowKind::Call &&
 						std::get<2>(edge) != FlowKind::ImportCall && indices.count(std::get<1>(edge)))
-						predecessors[indices.at(std::get<1>(edge))].push_back(indices.at(std::get<0>(edge)));
-				// Synthetic-root edges make every recognized entry independent.
-				std::vector<std::vector<bool>> dominators(count, std::vector<bool>(count, true));
+						normalEdges.emplace_back(indices.at(std::get<0>(edge)), indices.at(std::get<1>(edge)));
+				std::vector<size_t> rootIndices;
 				for (const auto root : roots)
-				{
-					auto& row = dominators[indices.at(root)];
-					std::fill(row.begin(), row.end(), false);
-					row[indices.at(root)] = true;
-				}
-				bool changed = true;
-				size_t passes = 0;
-				size_t work = 0;
-				bool workExhausted = false;
-				while (changed && ++passes <= count + 1)
-				{
-					changed = false;
-					for (size_t i = 0; i < count; ++i)
-					{
-						if (roots.count(nodes[i].rva))
-							continue;
-						std::vector<bool> next(count, true);
-						if (predecessors[i].empty())
-							std::fill(next.begin(), next.end(), false);
-						for (const auto predecessor : predecessors[i])
-						{
-							work += count;
-							if (work > 8000000)
-							{
-								workExhausted = true;
-								break;
-							}
-							for (size_t j = 0; j < count; ++j)
-								next[j] = next[j] && dominators[predecessor][j];
-						}
-						if (workExhausted)
-							break;
-						next[i] = true;
-						if (next != dominators[i])
-						{
-							dominators[i] = std::move(next);
-							changed = true;
-						}
-					}
-					if (workExhausted)
-						break;
-				}
-				if (changed || workExhausted)
+					rootIndices.push_back(indices.at(root));
+				const auto analysis = AnalyzeCfgDominance(count, normalEdges, rootIndices);
+				reachable = analysis.reachable;
+				const auto& dominators = analysis.dominators;
+				if (analysis.workExhausted)
 					exclusion = "dominator-work-limit";
 				else
 				{
@@ -230,6 +277,8 @@ namespace CppCoverage
 						depths[i] = std::count(dominators[i].begin(), dominators[i].end(), true);
 					for (size_t i = 0; i < count; ++i)
 					{
+						if (!reachable[i])
+							continue;
 						size_t nearest = count;
 						for (size_t j = 0; j < count; ++j)
 							if (j != i && dominators[i][j] &&
@@ -256,8 +305,16 @@ namespace CppCoverage
 			}
 			output << "{\"rva\":" << function.rva << ",\"size\":" << function.size
 				<< ",\"name\":" << Quote(Utf8(function.name)) << ",\"exclusion\":"
-				<< (exclusion.empty() ? "null" : Quote(exclusion))
-				<< ",\"syntheticRoot\":true,\"roots\":[";
+				<< (exclusion.empty() ? "null" : Quote(exclusion)) << ",\"uncertainties\":[";
+			for (size_t i = 0; i < function.uncertainties.size(); ++i)
+			{
+				if (i) output << ',';
+				output << Quote(function.uncertainties[i]);
+			}
+			output << "],\"normalFlowAssumptions\":["
+				"\"unavailable DIA annotations do not rule out EH, split code, or naked entry behavior\","
+				"\"implications assume the listed entries and normal flow despite annotation uncertainty\"],"
+				"\"syntheticRoot\":true,\"roots\":[";
 			bool first = true;
 			for (const auto root : roots)
 			{
@@ -273,6 +330,8 @@ namespace CppCoverage
 					if (!first) output << ',';
 					first = false;
 					output << "{\"rva\":" << node.rva << ",\"size\":" << node.size
+						<< ",\"rootReachable\":" << (!exclusion.empty() ? "null" :
+							reachable[indices.at(node.rva)] ? "true" : "false")
 						<< ",\"immediateDominatorRva\":";
 					const auto dominator = immediateDominators.find(node.rva);
 					if (dominator == immediateDominators.end())
@@ -342,6 +401,7 @@ namespace CppCoverage
 			"\"normalFlowAssumptions\":[\"entry occurs at a listed root\","
 			"\"no unlisted interior entry, callback, exception, or context transfer\","
 			"\"opaque calls return normally to their decoded continuation\","
+			"\"unavailable optional DIA annotations remain unknown; implications assume normal flow and listed entries\","
 			"\"the matching file image describes the executing layout\","
 			"\"a measured hit does not date its dominators within the capture window\"],"
 			"\"modules\":[";
@@ -458,8 +518,13 @@ namespace CppCoverage
 					if (i) output << ',';
 					output << "{\"rva\":" << functions[i].rva << ",\"size\":" << functions[i].size
 						<< ",\"name\":" << Quote(Utf8(functions[i].name))
-						<< ",\"exclusion\":" << Quote(exclusion)
-						<< ",\"roots\":[],\"nodes\":[],\"edges\":[],\"implications\":[]}";
+						<< ",\"exclusion\":" << Quote(exclusion) << ",\"uncertainties\":[";
+					for (size_t j = 0; j < functions[i].uncertainties.size(); ++j)
+					{
+						if (j) output << ',';
+						output << Quote(functions[i].uncertainties[j]);
+					}
+					output << "],\"roots\":[],\"nodes\":[],\"edges\":[],\"implications\":[]}";
 				}
 			output << "]}";
 		}

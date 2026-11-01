@@ -299,17 +299,15 @@ namespace CppCoverage
 					const auto ehaResult = symbol.get_hasEHa(&eha);
 					const auto splitResult = symbol.get_isSplitted(&split);
 					const auto nakedResult = symbol.get_isNaked(&naked);
-					if (ehResult != S_OK)
-						function.exclusion = "unknown-function-eligibility:hasEH";
-					else if (sehResult != S_OK)
-						function.exclusion = "unknown-function-eligibility:hasSEH";
-					else if (ehaResult != S_OK)
-						function.exclusion = "unknown-function-eligibility:hasEHa";
-					else if (splitResult != S_OK)
-						function.exclusion = "unknown-function-eligibility:isSplitted";
-					else if (nakedResult != S_OK)
-						function.exclusion = "unknown-function-eligibility:isNaked";
-					else if (eh || seh || eha || split || naked)
+					for (const auto& annotation : {
+						std::make_pair(ehResult, "hasEH"), std::make_pair(sehResult, "hasSEH"),
+						std::make_pair(ehaResult, "hasEHa"), std::make_pair(splitResult, "isSplitted"),
+						std::make_pair(nakedResult, "isNaked")})
+						if (annotation.first != S_OK)
+							function.uncertainties.push_back(std::string{"unavailable-dia-annotation:"} + annotation.second);
+					if ((ehResult == S_OK && eh) || (sehResult == S_OK && seh) ||
+						(ehaResult == S_OK && eha) || (splitResult == S_OK && split) ||
+						(nakedResult == S_OK && naked))
 						function.exclusion = "eh-split-or-naked-function";
 					handler.OnFunction(function);
 				});

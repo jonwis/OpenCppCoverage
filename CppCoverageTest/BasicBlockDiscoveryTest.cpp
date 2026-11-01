@@ -313,6 +313,40 @@ namespace CppCoverageTest
 		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
 	}
 
+	TEST(CfgReportTest, DisconnectedCyclesHaveNoRootReachableDominators)
+	{
+		const auto graph = AnalyzeCfgDominance(6,
+			{{0, 1}, {1, 2}, {3, 4}, {4, 3}, {4, 2}, {5, 5}}, {0});
+		EXPECT_FALSE(graph.workExhausted);
+		EXPECT_EQ((std::vector<bool>{true, true, true, false, false, false}), graph.reachable);
+		EXPECT_TRUE(graph.dominators[2][0]);
+		EXPECT_TRUE(graph.dominators[2][1]);
+		for (const auto node : {3u, 4u, 5u})
+		{
+			EXPECT_TRUE(std::none_of(graph.dominators[node].begin(), graph.dominators[node].end(),
+				[](bool value) { return value; }));
+			for (const auto& row : graph.dominators)
+				EXPECT_FALSE(row[node]);
+		}
+		const auto noRoots = AnalyzeCfgDominance(2, {{0, 1}, {1, 0}}, {});
+		EXPECT_EQ((std::vector<bool>{false, false}), noRoots.reachable);
+		EXPECT_FALSE(noRoots.dominators[0][0]);
+		EXPECT_FALSE(noRoots.dominators[1][1]);
+	}
+
+	TEST(CfgReportTest, MissingOptionalDiaAnnotationsRemainExplicitConditionalUncertainty)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0xeb, 0, 0xc3});
+		const auto report = Report(fixture,
+			{{0x1000, 4, L"uncertain", {}, {"unavailable-dia-annotation:isSplitted"}}}, {0x1003});
+		EXPECT_EQ("null", FirstRegion(report).get<std::string>("exclusion"));
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
+		EXPECT_EQ("unavailable-dia-annotation:isSplitted",
+			FirstRegion(report).get_child("uncertainties").front().second.get_value<std::string>());
+		EXPECT_FALSE(FirstRegion(report).get_child("normalFlowAssumptions").empty());
+	}
+
 	TEST(CfgReportTest, MultipleRootsAndOutsideDirectEntriesRemoveEarlierDominators)
 	{
 		PeFixture fixture;

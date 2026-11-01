@@ -40,6 +40,7 @@ namespace CppCoverage
 			uint64_t size = 0;
 			std::wstring name;
 			std::string exclusion;
+			std::vector<std::string> uncertainties;
 		};
 		struct Line
 		{

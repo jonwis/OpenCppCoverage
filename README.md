@@ -295,10 +295,15 @@ entries, callbacks, exceptions, and context transfers violate the stated model.
 Hybrid and dynamic-relocation images, ambiguous or incomplete function ranges,
 EH/chained unwind, unresolved indirect transfers, and unvalidated decoding
 produce explicit exclusions without implications.
-Unavailable DIA eligibility annotations also exclude a region; their absence
-does not certify that its function has no split code or exception handling.
+Positive DIA EH, SEH, EHa, split-code, and naked-function annotations exclude a
+region. Unavailable optional annotations appear in its `uncertainties` array.
+The region's `normalFlowAssumptions` keep implications conditional on the listed
+entries and normal flow despite those unknowns; absence does not certify a
+closed entry set or absence of exception handling.
 Each implication references the reported immediate-dominator tree as its
-structural witness.
+structural witness. Only nodes reachable from the listed roots participate in
+that tree or supply implication witnesses. `rootReachable` is `null` when a
+region is excluded before its analysis.
 
 Analysis is bounded: 100,000 decoded instructions and source records, 10,000
 functions, 8,192 module nodes, 512 region nodes, and 4,096 implications per

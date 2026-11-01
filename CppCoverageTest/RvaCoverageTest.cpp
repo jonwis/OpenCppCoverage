@@ -19,6 +19,7 @@
 #include "CppCoverage/CfgReport.hpp"
 #include <boost/property_tree/json_parser.hpp>
 #include <set>
+#include <tuple>
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
 #include "Tools/Tool.hpp"
@@ -646,47 +647,96 @@ namespace CppCoverageTest
 		EXPECT_THROW(cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, binary), std::runtime_error);
 	}
 
-	TEST_F(RvaCoverageTest, NativeMatchingPdbProvidesGraphsAndHonestEligibilityExclusions)
+	TEST_F(RvaCoverageTest, NativeMatchingPdbProducesConditionalChainWithoutChangingMeasuredExports)
 	{
 		const auto binary = Tools::GetExecutableFolder() / L"TestCoverageOptimizedBuild.dll";
+		struct FunctionCollector : LineCollector
+		{
+			std::vector<Function> functions;
+			void OnFunction(const Function& function) override { functions.push_back(function); }
+		} collector;
+		ASSERT_TRUE(cov::DebugInformationEnumerator({}).Enumerate(binary, collector, true));
+		const auto chain = std::find_if(collector.functions.begin(), collector.functions.end(), [](const auto& function) {
+			return function.name.find(L"CfgReportChain") != std::wstring::npos;
+		});
+		ASSERT_NE(collector.functions.end(), chain);
 		cov::PeImage image(binary);
 		cov::RvaCoverage raw;
 		cov::RvaModule module;
 		module.path = binary;
 		module.identity = image.Identity();
 		for (const auto& block : cov::BasicBlockDiscovery{}.Discover(image))
-			module.blocks.push_back({block, true});
+			module.blocks.push_back({block, false});
+		auto anchor = module.blocks.end();
+		for (auto site = module.blocks.begin(); site != module.blocks.end(); ++site)
+			if (site->block.rva > chain->rva &&
+				uint64_t{site->block.rva} + site->block.size <= uint64_t{chain->rva} + chain->size)
+				anchor = site;
+		ASSERT_NE(module.blocks.end(), anchor);
+		anchor->executed = true;
+		const auto measuredRva = anchor->block.rva;
 		raw.modules.push_back(module);
+		cov::WriteRvaCoverage(raw, path_);
+		const auto original = Bytes();
+		const auto withoutReport = cov::RvaCoverageResolver{}.Resolve(raw, {}, {});
 		const auto reportPath = directory_ / L"native-cfg.json";
-		cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, reportPath);
+		const auto withReport = cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, reportPath);
+		const auto measuredLines = [](const Plugin::CoverageData& coverage) {
+			std::map<std::tuple<fs::path, fs::path, unsigned>, bool> lines;
+			for (const auto& currentModule : coverage.GetModules())
+				for (const auto& source : currentModule->GetFiles())
+					for (const auto& line : source->GetLines())
+						lines.emplace(std::make_tuple(currentModule->GetPath(), source->GetPath(), line.GetLineNumber()),
+							line.HasBeenExecuted());
+			return lines;
+		};
+		EXPECT_EQ(measuredLines(withoutReport), measuredLines(withReport));
+		cov::WriteRvaCoverage(raw, path_);
+		EXPECT_EQ(original, Bytes());
+		const auto baselinePath = directory_ / L"native-baseline.cov";
+		const auto reportedPath = directory_ / L"native-reported.cov";
+		std::string diagnostic;
+		const auto cli = Tools::GetExecutableFolder() / L"OpenCppCoverage.exe";
+		ASSERT_EQ(0, Tools::RunProcess(cli,
+			{L"--resolve", path_.wstring(), L"--export_type", L"binary:" + baselinePath.wstring()},
+			&diagnostic, true)) << diagnostic;
+		ASSERT_EQ(0, Tools::RunProcess(cli,
+			{L"--resolve", path_.wstring(), L"--cfg-report", reportPath.wstring(),
+				L"--export_type", L"binary:" + reportedPath.wstring()},
+			&diagnostic, true)) << diagnostic;
+		std::ifstream baselineFile(baselinePath, std::ios::binary);
+		std::ifstream reportedFile(reportedPath, std::ios::binary);
+		EXPECT_EQ((std::vector<uint8_t>{std::istreambuf_iterator<char>(baselineFile), {}}),
+			(std::vector<uint8_t>{std::istreambuf_iterator<char>(reportedFile), {}}));
 		std::ifstream file(reportPath);
 		boost::property_tree::ptree report;
 		boost::property_tree::read_json(file, report);
 		const auto& reported = report.get_child("modules").front().second;
 		ASSERT_EQ("null", reported.get<std::string>("exclusion"));
-		size_t validated = 0;
 		size_t implications = 0;
-		size_t nodes = 0;
-		std::set<std::string> reasons;
+		bool entryRequired = false;
+		std::ostringstream evidence;
 		for (const auto& function : reported.get_child("functions"))
 		{
-			const auto exclusion = function.second.get<std::string>("exclusion");
-			if (exclusion == "null")
-				++validated;
-			else
-				reasons.insert(exclusion);
-			implications += function.second.get_child("implications").size();
-			nodes += function.second.get_child("nodes").size();
+			if (function.second.get<std::string>("name").find("CfgReportChain") == std::string::npos)
+				continue;
+			ASSERT_EQ("null", function.second.get<std::string>("exclusion"));
+			EXPECT_EQ(chain->uncertainties.size(), function.second.get_child("uncertainties").size());
+			for (const auto& implication : function.second.get_child("implications"))
+			{
+				EXPECT_EQ(measuredRva, implication.second.get<uint32_t>("measuredRva"));
+				const auto required = implication.second.get<uint32_t>("requiredRva");
+				entryRequired = entryRequired || required == chain->rva;
+				evidence << measuredRva << "->" << required << ';';
+				++implications;
+			}
 		}
-		EXPECT_GT(nodes, 0u);
-		RecordProperty("cfgEligibilityExclusions", testing::PrintToString(reasons));
-		if (!validated)
-		{
-			EXPECT_EQ(0u, implications);
-			EXPECT_TRUE(std::any_of(reasons.begin(), reasons.end(), [](const auto& reason) {
-				return reason.find("unknown-function-eligibility:") == 0;
-			})) << testing::PrintToString(reasons);
-		}
+		EXPECT_GT(implications, 0u);
+		EXPECT_TRUE(entryRequired);
+		EXPECT_FALSE(report.get<bool>("withinWindowExecutionClaim"));
+		EXPECT_EQ("unknown", report.get<std::string>("temporalProvenance"));
+		RecordProperty("cfgNativeChainImplications", evidence.str());
+		RecordProperty("cfgNativeImageHash", reported.get<std::string>("identity.imageHash"));
 	}
 
 	TEST_F(RvaCoverageTest, CfgReportRejectsChangedIdentity)
