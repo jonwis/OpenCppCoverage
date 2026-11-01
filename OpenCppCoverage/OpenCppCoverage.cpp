@@ -123,6 +123,14 @@ namespace OpenCppCoverage
 					        ? fs::path{*parameter}
 					        : exporter->GetDefaultPath(defaultPathPrefix);
 
+					if (options.GetCfgReportPath())
+					{
+						std::error_code error;
+						if (fs::equivalent(output, *options.GetCfgReportPath(), error) ||
+							fs::absolute(output).lexically_normal() ==
+								fs::absolute(*options.GetCfgReportPath()).lexically_normal())
+							throw std::runtime_error("CFG report cannot share a coverage export path");
+					}
 					exporter->Export(coverage, output);
 				}
 			}
@@ -214,7 +222,8 @@ namespace OpenCppCoverage
 						return !filters.IsModuleSelected(module.path.wstring());
 					}), raw.modules.end());
 				auto resolvedData = cov::RvaCoverageResolver{}.Resolve(
-					raw, options.GetModuleDirectories(), options.GetSubstitutePdbSourcePaths());
+					raw, options.GetModuleDirectories(), options.GetSubstitutePdbSourcePaths(),
+					options.GetCfgReportPath() ? *options.GetCfgReportPath() : std::filesystem::path{});
 				auto resolved = FilterResolvedCoverage(filters, resolvedData);
 				cov::CoverageDataMerger merger;
 				if (options.IsAggregateByFileModeEnabled())

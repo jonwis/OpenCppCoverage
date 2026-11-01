@@ -66,6 +66,7 @@ namespace CppCoverage
 				(ProgramOptions::DurationOption.c_str(), po::value<int>(), "Existing-process collection duration in positive whole seconds. Ctrl+C requests an orderly early detach.")
 				(ProgramOptions::WatchProcessesOption.c_str(), "Also attach matching future process launches during existing-process collection. ETW API access failures report when elevation is needed.")
 				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
+				(ProgramOptions::CfgReportOption.c_str(), po::value<std::string>(), "Write a conditional normal-flow CFG implication report during --resolve. Does not change measured exports.")
 				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Search directory for matching images during --resolve. Can have multiple occurrences.")
 				(ProgramOptions::SelectedProcessesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
@@ -147,6 +148,7 @@ namespace CppCoverage
 	const std::string ProgramOptions::DurationOption = "duration";
 	const std::string ProgramOptions::WatchProcessesOption = "watch_processes";
 	const std::string ProgramOptions::ResolveOption = "resolve";
+	const std::string ProgramOptions::CfgReportOption = "cfg-report";
 	const std::string ProgramOptions::ModuleDirectoryOption = "module_dir";
     const std::string ProgramOptions::StopOnAssertOption = "stop_on_assert";
 

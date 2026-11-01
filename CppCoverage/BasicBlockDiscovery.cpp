@@ -201,8 +201,8 @@ namespace CppCoverage
 			return true;
 		}
 
-		bool ImportReference(const PeImage& image, const cs_insn& instruction,
-			uint32_t& target)
+		bool ImportSlotReference(const PeImage& image, const cs_insn& instruction,
+			uint32_t& slot)
 		{
 			const auto& detail = instruction.detail->x86;
 			if (detail.op_count != 1 || detail.operands[0].type != X86_OP_MEM)
@@ -211,7 +211,7 @@ namespace CppCoverage
 			if (memory.index != X86_REG_INVALID ||
 				(memory.segment != X86_REG_INVALID && memory.segment != X86_REG_DS))
 				return false;
-			uint32_t slot = 0;
+			slot = 0;
 			if (memory.base == X86_REG_RIP)
 			{
 				const auto address = static_cast<int64_t>(instruction.address) +
@@ -224,12 +224,32 @@ namespace CppCoverage
 			else if (memory.base != X86_REG_INVALID ||
 				!image.VaToRva(static_cast<uint64_t>(memory.disp), slot))
 				return false;
-			return image.IsImportSlot(slot) && image.ImportTarget(slot, target);
+			return image.IsImportSlot(slot);
 		}
 
+		bool ImportReference(const PeImage& image, const cs_insn& instruction,
+			uint32_t& target)
+		{
+			uint32_t slot = 0;
+			return ImportSlotReference(image, instruction, slot) && image.ImportTarget(slot, target);
+		}
 	}
 
 	std::vector<BasicBlock> BasicBlockDiscovery::Discover(const PeImage& image) const
+	{
+		return DiscoverImpl(image, {}, nullptr);
+	}
+
+	DecodedGraph BasicBlockDiscovery::DiscoverGraph(const PeImage& image,
+		const std::vector<uint32_t>& roots) const
+	{
+		DecodedGraph graph;
+		graph.blocks = DiscoverImpl(image, roots, &graph);
+		return graph;
+	}
+
+	std::vector<BasicBlock> BasicBlockDiscovery::DiscoverImpl(const PeImage& image,
+		const std::vector<uint32_t>& supplementalRoots, DecodedGraph* graph) const
 	{
 		std::unique_ptr<Decoder> amd64;
 		std::unique_ptr<Decoder> arm64;
@@ -256,8 +276,43 @@ namespace CppCoverage
 		for (const auto root : image.Roots())
 			enqueue(root);
 
-		while (!pending.empty())
+		const auto blocksFromState = [&]()
 		{
+			std::vector<BasicBlock> blocks;
+			blocks.reserve((std::min)(leaderCount, decodedCount));
+			bool previousEndsBlock = true;
+			for (const auto& chunk : state.chunks)
+				for (size_t offset = 0; offset < chunk.bytes.size(); ++offset)
+				{
+					const auto flags = chunk.bytes[offset];
+					const auto size = flags & InstructionSizeMask;
+					if (!size)
+						continue;
+					const auto rva = chunk.rva + static_cast<uint32_t>(offset);
+					const auto instructionSet = flags & Arm64Instruction ?
+						InstructionSet::Arm64 : InstructionSet::Amd64;
+					if (!blocks.empty() && !previousEndsBlock && !(flags & BlockLeader) &&
+						blocks.back().rva + blocks.back().size == rva &&
+						blocks.back().instructionSet == instructionSet)
+						blocks.back().size += size;
+					else
+						blocks.push_back({rva, static_cast<uint32_t>(size), instructionSet});
+					previousEndsBlock = (flags & EndsBlock) != 0;
+				}
+			return blocks;
+		};
+		bool supplementalRootsAdded = false;
+		while (!pending.empty() || (graph && !supplementalRootsAdded))
+		{
+			if (pending.empty())
+			{
+				graph->catalogBlocks = blocksFromState();
+				supplementalRootsAdded = true;
+				for (const auto root : supplementalRoots)
+					enqueue(root);
+				if (pending.empty())
+					break;
+			}
 			auto rva = pending.front();
 			pending.pop_front();
 			if (state.At(rva) & InstructionSizeMask)
@@ -276,7 +331,11 @@ namespace CppCoverage
 				const auto* instruction = decoder->Decode(code, rva);
 				if (!instruction || instruction->size > InstructionSizeMask || instruction->size > code.size ||
 					(code.instructionSet == InstructionSet::Arm64 && instruction->size != 4))
+				{
+					if (graph)
+						graph->issues.push_back({rva, "invalid-decode-or-missing-bytes"});
 					break;
+				}
 				if (instruction->size > (std::numeric_limits<uint32_t>::max)() - rva)
 					break;
 				const auto nextRva = rva + instruction->size;
@@ -288,6 +347,34 @@ namespace CppCoverage
 				const bool branch = Group(*instruction, CS_GRP_JUMP);
 				const bool stop = Terminates(*instruction, code.instructionSet);
 				const bool conditional = branch && Conditional(*instruction, code.instructionSet);
+				if (graph)
+				{
+					THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT),
+						decodedCount >= 100000, "CFG report exceeds the decode limit");
+					uint32_t target = 0;
+					const bool direct = (call || branch) &&
+						DirectTarget(*instruction, code.instructionSet, target);
+					uint32_t slot = 0;
+					const bool import = call && code.instructionSet == InstructionSet::Amd64 &&
+						ImportSlotReference(image, *instruction, slot);
+					if (direct)
+						graph->edges.push_back({rva, target, call ? FlowKind::Call : FlowKind::Branch});
+					if (import)
+						graph->edges.push_back({rva, slot, FlowKind::ImportCall});
+					if ((call || branch) && !direct && !import)
+						graph->issues.push_back({rva, call ? "unresolved-indirect-call" : "unresolved-indirect-jump"});
+					if (call || conditional || (!branch && !stop))
+						graph->edges.push_back({rva, nextRva,
+							call ? FlowKind::NormalReturn : FlowKind::Fallthrough});
+					if (stop && !Group(*instruction, CS_GRP_RET))
+						graph->issues.push_back({rva, "context-transfer-or-trap"});
+					if (code.instructionSet == InstructionSet::Amd64 &&
+						(instruction->id == X86_INS_SYSCALL || instruction->id == X86_INS_SYSENTER ||
+							instruction->id == X86_INS_XBEGIN || instruction->id == X86_INS_XEND ||
+							instruction->id == X86_INS_INT || instruction->id == X86_INS_INT1 ||
+							instruction->id == X86_INS_INT3 || instruction->id == X86_INS_INTO))
+						graph->issues.push_back({rva, "context-transfer-or-trap"});
+				}
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), decodedCount >= MaxInstructions, "Basic-block discovery exceeds the instruction limit");
 				flags = static_cast<uint8_t>(flags | instruction->size |
 				    (code.instructionSet == InstructionSet::Arm64 ? Arm64Instruction : 0) |
@@ -323,28 +410,6 @@ namespace CppCoverage
 				rva = nextRva;
 			}
 		}
-
-		std::vector<BasicBlock> blocks;
-		blocks.reserve((std::min)(leaderCount, decodedCount));
-		bool previousEndsBlock = true;
-		for (const auto& chunk : state.chunks)
-			for (size_t offset = 0; offset < chunk.bytes.size(); ++offset)
-			{
-				const auto flags = chunk.bytes[offset];
-				const auto size = flags & InstructionSizeMask;
-				if (!size)
-					continue;
-				const auto rva = chunk.rva + static_cast<uint32_t>(offset);
-				const auto instructionSet = flags & Arm64Instruction ?
-				    InstructionSet::Arm64 : InstructionSet::Amd64;
-				if (!blocks.empty() && !previousEndsBlock && !(flags & BlockLeader) &&
-				    blocks.back().rva + blocks.back().size == rva &&
-				    blocks.back().instructionSet == instructionSet)
-					blocks.back().size += size;
-				else
-					blocks.push_back({rva, static_cast<uint32_t>(size), instructionSet});
-				previousEndsBlock = (flags & EndsBlock) != 0;
-			}
-		return blocks;
+		return blocksFromState();
 	}
 }

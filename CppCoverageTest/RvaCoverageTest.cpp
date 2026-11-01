@@ -16,6 +16,9 @@
 #include "CppCoverage/RvaCoverageResolver.hpp"
 #include "CppCoverage/RvaCoverageRunner.hpp"
 #include "CppCoverage/DebugInformationEnumerator.hpp"
+#include "CppCoverage/CfgReport.hpp"
+#include <boost/property_tree/json_parser.hpp>
+#include <set>
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
 #include "Tools/Tool.hpp"
@@ -571,6 +574,131 @@ namespace CppCoverageTest
 			}
 			EXPECT_TRUE(found);
 		}
+	}
+
+	TEST_F(RvaCoverageTest, CfgReportLeavesRawEvidenceAndMeasuredSourceExportsUnchanged)
+	{
+		const auto binary = CurrentExecutable();
+		LineCollector collector;
+		ASSERT_TRUE(cov::DebugInformationEnumerator({}).Enumerate(binary, collector));
+		ASSERT_FALSE(collector.lines_.empty());
+		const auto& line = collector.lines_.front();
+		cov::RvaCoverage raw;
+		cov::RvaModule module;
+		module.path = binary;
+		module.identity = cov::PeImage(binary).Identity();
+		const auto isa = module.identity.machine == 0xaa64 ? cov::InstructionSet::Arm64 : cov::InstructionSet::Amd64;
+		module.blocks.push_back({{static_cast<uint32_t>(line.virtualAddress_),
+			(std::max)(1ul, line.length_), isa}, true});
+		raw.modules.push_back(module);
+		cov::WriteRvaCoverage(raw, path_);
+		const auto original = Bytes();
+		const auto baseline = cov::RvaCoverageResolver{}.Resolve(raw, {}, {});
+		const auto reportPath = directory_ / L"cfg.json";
+		const auto withReport = cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, reportPath);
+		ASSERT_TRUE(fs::is_regular_file(reportPath));
+		std::ifstream reportFile(reportPath);
+		boost::property_tree::ptree report;
+		boost::property_tree::read_json(reportFile, report);
+		EXPECT_FALSE(report.get<bool>("withinWindowExecutionClaim"));
+		EXPECT_EQ("unknown", report.get<std::string>("temporalProvenance"));
+		ASSERT_EQ(baseline.GetModules().size(), withReport.GetModules().size());
+		for (size_t i = 0; i < baseline.GetModules().size(); ++i)
+		{
+			const auto& expected = baseline.GetModules()[i]->GetFiles();
+			const auto& actual = withReport.GetModules()[i]->GetFiles();
+			ASSERT_EQ(expected.size(), actual.size());
+			for (size_t j = 0; j < expected.size(); ++j)
+			{
+				EXPECT_EQ(expected[j]->GetPath(), actual[j]->GetPath());
+				const auto expectedLines = expected[j]->GetLines();
+				const auto actualLines = actual[j]->GetLines();
+				ASSERT_EQ(expectedLines.size(), actualLines.size());
+				for (size_t k = 0; k < expectedLines.size(); ++k)
+				{
+					EXPECT_EQ(expectedLines[k].GetLineNumber(), actualLines[k].GetLineNumber());
+					EXPECT_EQ(expectedLines[k].HasBeenExecuted(), actualLines[k].HasBeenExecuted());
+				}
+			}
+		}
+		cov::WriteRvaCoverage(raw, path_);
+		EXPECT_EQ(original, Bytes());
+		const auto baselinePath = directory_ / L"baseline.cov";
+		const auto reportedPath = directory_ / L"reported.cov";
+		const auto cliReport = directory_ / L"cli-cfg.json";
+		std::string diagnostic;
+		const auto cli = Tools::GetExecutableFolder() / L"OpenCppCoverage.exe";
+		ASSERT_EQ(0, Tools::RunProcess(cli,
+			{L"--resolve", path_.wstring(), L"--export_type", L"binary:" + baselinePath.wstring()},
+			&diagnostic, true)) << diagnostic;
+		ASSERT_EQ(0, Tools::RunProcess(cli,
+			{L"--resolve", path_.wstring(), L"--cfg-report", cliReport.wstring(),
+				L"--export_type", L"binary:" + reportedPath.wstring()},
+			&diagnostic, true)) << diagnostic;
+		std::ifstream expectedFile(baselinePath, std::ios::binary);
+		std::ifstream actualFile(reportedPath, std::ios::binary);
+		EXPECT_EQ((std::vector<uint8_t>{std::istreambuf_iterator<char>(expectedFile), {}}),
+			(std::vector<uint8_t>{std::istreambuf_iterator<char>(actualFile), {}}));
+		std::ifstream cliReportFile(cliReport);
+		boost::property_tree::ptree cliJson;
+		boost::property_tree::read_json(cliReportFile, cliJson);
+		EXPECT_FALSE(cliJson.get<bool>("withinWindowExecutionClaim"));
+		EXPECT_THROW(cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, binary), std::runtime_error);
+	}
+
+	TEST_F(RvaCoverageTest, NativeMatchingPdbProvidesGraphsAndHonestEligibilityExclusions)
+	{
+		const auto binary = Tools::GetExecutableFolder() / L"TestCoverageOptimizedBuild.dll";
+		cov::PeImage image(binary);
+		cov::RvaCoverage raw;
+		cov::RvaModule module;
+		module.path = binary;
+		module.identity = image.Identity();
+		for (const auto& block : cov::BasicBlockDiscovery{}.Discover(image))
+			module.blocks.push_back({block, true});
+		raw.modules.push_back(module);
+		const auto reportPath = directory_ / L"native-cfg.json";
+		cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, reportPath);
+		std::ifstream file(reportPath);
+		boost::property_tree::ptree report;
+		boost::property_tree::read_json(file, report);
+		const auto& reported = report.get_child("modules").front().second;
+		ASSERT_EQ("null", reported.get<std::string>("exclusion"));
+		size_t validated = 0;
+		size_t implications = 0;
+		size_t nodes = 0;
+		std::set<std::string> reasons;
+		for (const auto& function : reported.get_child("functions"))
+		{
+			const auto exclusion = function.second.get<std::string>("exclusion");
+			if (exclusion == "null")
+				++validated;
+			else
+				reasons.insert(exclusion);
+			implications += function.second.get_child("implications").size();
+			nodes += function.second.get_child("nodes").size();
+		}
+		EXPECT_GT(nodes, 0u);
+		RecordProperty("cfgEligibilityExclusions", testing::PrintToString(reasons));
+		if (!validated)
+		{
+			EXPECT_EQ(0u, implications);
+			EXPECT_TRUE(std::any_of(reasons.begin(), reasons.end(), [](const auto& reason) {
+				return reason.find("unknown-function-eligibility:") == 0;
+			})) << testing::PrintToString(reasons);
+		}
+	}
+
+	TEST_F(RvaCoverageTest, CfgReportRejectsChangedIdentity)
+	{
+		const auto binary = CurrentExecutable();
+		cov::CfgModuleInput input;
+		input.image = binary;
+		input.evidence.identity = cov::PeImage(binary).Identity();
+		input.functions.push_back({0x1000, 4, L"synthetic", {}});
+		input.evidence.identity.imageHash[0] ^= 1;
+		std::ostringstream output;
+		EXPECT_THROW(cov::WriteCfgReport(output, {input}), std::runtime_error);
 	}
 
 	TEST_F(RvaCoverageTest, UnknownContributorsSuppressNegativesAcrossRepeatedLineRecords)

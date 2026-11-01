@@ -12,6 +12,7 @@ namespace CppCoverage
 		Plugin::CoverageData Resolve(
 		    const RvaCoverage&,
 		    const std::vector<std::filesystem::path>& moduleDirectories,
-		    const std::vector<SubstitutePdbSourcePath>& substitutions) const;
+		    const std::vector<SubstitutePdbSourcePath>& substitutions,
+		    const std::filesystem::path& cfgReportPath = {}) const;
 	};
 }

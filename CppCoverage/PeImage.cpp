@@ -686,11 +686,14 @@ namespace CppCoverage
 			if (!begin && !unwind)
 				continue;
 			AddRoot(begin);
+			bool unsafe = false;
+			uint32_t functionLength = 0;
 			if (arm64)
 			{
 				const auto kind = unwind & 3;
 				if (kind == 3)
 				{
+					unsafeUnwindRanges_.push_back({begin, identity_.sizeOfImage - begin, InstructionSet::Arm64});
 					chain(record, unwind & ~3u);
 					continue;
 				}
@@ -719,10 +722,15 @@ namespace CppCoverage
 						static_cast<size_t>(words) * 4;
 					RawOffset(unwind, handlerOffset + ((header & (1u << 20)) ? 4 : 0));
 					if (header & (1u << 20))
+					{
+						unsafe = true;
 						AddRoot(Rva32(unwind, handlerOffset));
+					}
 				}
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), !(length != 0 && begin < identity_.sizeOfImage &&
 					length <= identity_.sizeOfImage - begin), "Invalid ARM64 runtime function extent");
+				functionLength = length;
+				unsafe = unsafe || kind == 2;
 			}
 			else
 			{
@@ -730,12 +738,15 @@ namespace CppCoverage
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), !(begin < end && end <= identity_.sizeOfImage), "Invalid AMD64 runtime function extent");
 				if (unwind & 1)
 				{
+					unsafeUnwindRanges_.push_back({begin, end - begin, InstructionSet::Amd64});
 					chain(record, unwind & ~1u);
 					continue;
 				}
 				const auto offset = RawOffset(unwind, 4);
 				const auto version = bytes_[offset] & 7;
 				const auto flags = bytes_[offset] >> 3;
+				unsafe = flags != 0;
+				functionLength = end - begin;
 				THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_BAD_EXE_FORMAT), !((version == 1 || version == 2) && (flags & ~7) == 0 &&
 					!((flags & 4) && (flags & 3))), "Unsupported AMD64 unwind header");
 				const auto count = bytes_[offset + 2];
@@ -746,6 +757,9 @@ namespace CppCoverage
 				else if (flags & 3)
 					AddRoot(Rva32(unwind, tail));
 			}
+			if (unsafe)
+				unsafeUnwindRanges_.push_back({begin, functionLength,
+					arm64 ? InstructionSet::Arm64 : InstructionSet::Amd64});
 		}
 	}
 
@@ -805,6 +819,7 @@ namespace CppCoverage
 		}
 		if (!table)
 			return;
+		hasDynamicRelocations_ = true;
 		RawOffset(table, 8);
 		const auto version = Rva32(table);
 		const auto tableSize = Rva32(table, 4);

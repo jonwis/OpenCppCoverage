@@ -110,6 +110,20 @@ TEST(RvaOptionsTest, ResolutionRejectsMissingInputAndProgram)
 	EXPECT_FALSE(ParseRvaOptions({"--module_dir", ".", "--", "test.exe"}));
 }
 
+TEST(RvaOptionsTest, CfgReportRequiresResolutionAndSeparateOutput)
+{
+	auto options = ParseRvaOptions({"--resolve", __FILE__, "--cfg-report", "graph.json"});
+	ASSERT_TRUE(options);
+	ASSERT_TRUE(options->GetCfgReportPath());
+	EXPECT_EQ(std::filesystem::path("graph.json"), *options->GetCfgReportPath());
+	EXPECT_FALSE(ParseRvaOptions({"--cfg-report", "graph.json", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--cfg-report", "graph.json", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--cfg-report", ""}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--cfg-report", __FILE__}));
+	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--cfg-report", "same.cov",
+		"--export_type", "binary:same.cov"}));
+}
+
 TEST(RvaOptionsTest, ProcessFiltersRequireSymbolFreeAndValidMode)
 {
 	EXPECT_FALSE(ParseRvaOptions({"--processes", "*notepad*", "--", "test.exe"}));

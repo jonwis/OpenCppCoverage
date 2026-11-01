@@ -64,6 +64,8 @@ namespace CppCoverage
 		const boost::optional<uint32_t>& GetDuration() const { return duration_; }
 		void SetResolvePath(const std::filesystem::path& path) { resolvePath_ = path; }
 		const boost::optional<std::filesystem::path>& GetResolvePath() const { return resolvePath_; }
+		void SetCfgReportPath(const std::filesystem::path& path) { cfgReportPath_ = path; }
+		const boost::optional<std::filesystem::path>& GetCfgReportPath() const { return cfgReportPath_; }
 		void AddModuleDirectory(const std::filesystem::path& path) { moduleDirectories_.push_back(path); }
 		const std::vector<std::filesystem::path>& GetModuleDirectories() const { return moduleDirectories_; }
 
@@ -119,6 +121,7 @@ namespace CppCoverage
 		bool watchProcesses_ = false;
 		boost::optional<uint32_t> duration_;
 		boost::optional<std::filesystem::path> resolvePath_;
+		boost::optional<std::filesystem::path> cfgReportPath_;
 		std::vector<std::filesystem::path> moduleDirectories_;
 
 		LogLevel logLevel_;

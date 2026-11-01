@@ -58,6 +58,7 @@ namespace CppCoverage
 		static const std::string DurationOption;
 		static const std::string WatchProcessesOption;
 		static const std::string ResolveOption;
+		static const std::string CfgReportOption;
 		static const std::string ModuleDirectoryOption;
 
 		explicit ProgramOptions(const std::vector<std::unique_ptr<IOptionParser>>&);

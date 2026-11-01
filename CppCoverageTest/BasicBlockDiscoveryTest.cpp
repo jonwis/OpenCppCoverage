@@ -3,6 +3,14 @@
 #include <wil/result.h>
 
 #include "CppCoverage/BasicBlockDiscovery.hpp"
+#include "CppCoverage/CfgReport.hpp"
+#include <boost/property_tree/json_parser.hpp>
+#include <atomic>
+#include <fstream>
+#include <process.h>
+#include <sstream>
+#include <set>
+#include <map>
 
 #include <algorithm>
 #include <array>
@@ -200,6 +208,318 @@ namespace CppCoverageTest
 			}
 		}
 
+		boost::property_tree::ptree Report(const PeFixture& fixture,
+			std::vector<IDebugInformationHandler::Function> functions,
+			const std::vector<uint32_t>& hits,
+			std::vector<CfgSourceLine> lines = {}, bool corruptCatalog = false,
+			bool unobserveUnhit = false)
+		{
+			static std::atomic<unsigned> next{0};
+			const auto path = std::filesystem::path(PROJECT_DIR) /
+				("CfgFixture-" + std::to_string(_getpid()) + "-" + std::to_string(next++) + ".exe");
+			struct Cleanup
+			{
+				std::filesystem::path path;
+				~Cleanup() { std::error_code error; std::filesystem::remove(path, error); }
+			} cleanup{path};
+			{
+				std::ofstream file(path, std::ios::binary);
+				file.write(reinterpret_cast<const char*>(fixture.bytes.data()), fixture.bytes.size());
+			}
+			CfgModuleInput input;
+			input.image = path;
+			input.evidence.path = path;
+			input.evidence.identity = PeImage(fixture.bytes).Identity();
+			try
+			{
+				for (const auto& block : fixture.Discover())
+					input.evidence.blocks.push_back({block,
+						std::find(hits.begin(), hits.end(), block.rva) != hits.end()});
+			}
+			catch (const wil::ResultException&)
+			{
+				EXPECT_EQ(0u, hits.size());
+			}
+			if (corruptCatalog && !input.evidence.blocks.empty())
+				++input.evidence.blocks.front().block.size;
+			if (unobserveUnhit)
+				for (auto& site : input.evidence.blocks)
+					if (!site.executed)
+					{
+						site.selected = false;
+						site.observed = false;
+					}
+			input.functions = std::move(functions);
+			input.lines = std::move(lines);
+			std::stringstream text;
+			WriteCfgReport(text, {input});
+			std::ostringstream repeated;
+			repeated << std::hex << std::showbase << std::showpos;
+			WriteCfgReport(repeated, {input});
+			EXPECT_EQ(text.str(), repeated.str());
+			boost::property_tree::ptree report;
+			boost::property_tree::read_json(text, report);
+			EXPECT_EQ(1, report.get<int>("schemaVersion"));
+			EXPECT_FALSE(report.get<bool>("withinWindowExecutionClaim"));
+			EXPECT_EQ("unknown", report.get<std::string>("temporalProvenance"));
+			EXPECT_EQ("required-on-normal-entry-paths", report.get<std::string>("semantics"));
+			return report;
+		}
+
+		const boost::property_tree::ptree& FirstRegion(const boost::property_tree::ptree& report)
+		{
+			return report.get_child("modules").front().second.get_child("functions").front().second;
+		}
+
+		std::set<uint32_t> Required(const boost::property_tree::ptree& region)
+		{
+			std::set<uint32_t> result;
+			std::map<uint32_t, uint32_t> parents;
+			for (const auto& node : region.get_child("nodes"))
+				if (node.second.get<std::string>("immediateDominatorRva") != "null")
+					parents.emplace(node.second.get<uint32_t>("rva"),
+						node.second.get<uint32_t>("immediateDominatorRva"));
+			for (const auto& item : region.get_child("implications"))
+			{
+				result.insert(item.second.get<uint32_t>("requiredRva"));
+				EXPECT_EQ("strict-dominator", item.second.get<std::string>("witness.kind"));
+				auto current = item.second.get<uint32_t>("witness.treeNodeRva");
+				const auto required = item.second.get<uint32_t>("requiredRva");
+				size_t steps = 0;
+				while (current != required && parents.count(current) && steps++ <= parents.size())
+					current = parents.at(current);
+				EXPECT_EQ(required, current);
+			}
+			return result;
+		}
+	}
+
+	TEST(CfgReportTest, ChainReportsConditionalStrictDominatorsOnlyFromMeasuredHit)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0xeb, 0, 0x90, 0xeb, 0, 0xc3});
+		const auto report = Report(fixture, {{0x1000, 7, L"chain", {}}}, {0x1006});
+		const auto& region = FirstRegion(report);
+		EXPECT_EQ("null", region.get<std::string>("exclusion"));
+		EXPECT_EQ((std::set<uint32_t>{0x1000, 0x1003}), Required(region));
+		EXPECT_TRUE(Required(FirstRegion(Report(fixture, {{0x1000, 7, L"chain", {}}}, {}))).empty());
+	}
+
+	TEST(CfgReportTest, DiamondDoesNotClaimEitherAlternativeArm)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x75, 3, 0x90, 0xeb, 1, 0x90, 0xc3});
+		const auto report = Report(fixture, {{0x1000, 7, L"diamond", {}}}, {0x1006});
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
+	}
+
+	TEST(CfgReportTest, MultipleRootsAndOutsideDirectEntriesRemoveEarlierDominators)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0xeb, 0, 0x90, 0xeb, 0, 0xc3});
+		fixture.Exports({0x1003});
+		auto report = Report(fixture, {{0x1000, 7, L"roots", {}}}, {0x1006});
+		EXPECT_EQ((std::set<uint32_t>{0x1003}), Required(FirstRegion(report)));
+		fixture.Exports({0x1020});
+		fixture.Code(0x1020, {0xe9, 0xde, 0xff, 0xff, 0xff});
+		report = Report(fixture, {{0x1000, 7, L"outside", {}}}, {0x1006});
+		EXPECT_EQ((std::set<uint32_t>{0x1003}), Required(FirstRegion(report)));
+	}
+
+	TEST(CfgReportTest, LoopRetainsSelfEdgeWithoutClaimingFutureExecution)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0x75, 0xfd, 0xc3});
+		const auto report = Report(fixture, {{0x1000, 4, L"loop", {}}}, {0x1003});
+		const auto& region = FirstRegion(report);
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(region));
+		bool self = false;
+		for (const auto& edge : region.get_child("edges"))
+			self = self || (edge.second.get<uint32_t>("from") == 0x1000 &&
+				edge.second.get<uint32_t>("to") == 0x1000);
+		EXPECT_TRUE(self);
+	}
+
+	TEST(CfgReportTest, SupplementalLateSplitKeepsDecodedFallthroughAndOriginalMeasurementSite)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0x90, 0xc3});
+		const auto graph = BasicBlockDiscovery{}.DiscoverGraph(PeImage(fixture.bytes), {0x1001});
+		ExpectBlocks(graph.catalogBlocks, {{0x1000, 3}});
+		ExpectBlocks(graph.blocks, {{0x1000, 1}, {0x1001, 2}});
+		EXPECT_TRUE(std::any_of(graph.edges.begin(), graph.edges.end(), [](const DecodedEdge& edge) {
+			return edge.from == 0x1000 && edge.to == 0x1001 && edge.kind == FlowKind::Fallthrough;
+		}));
+		const auto report = Report(fixture,
+			{{0x1000, 1, L"first", {}}, {0x1001, 2, L"interior", {}}}, {0x1000});
+		const auto& regions = report.get_child("modules").front().second.get_child("functions");
+		const auto& interior = regions.back().second;
+		ASSERT_EQ(1u, interior.get_child("nodes").size());
+		EXPECT_EQ("null", interior.get_child("nodes").front().second.get<std::string>("measuredSite"));
+		EXPECT_TRUE(Required(interior).empty());
+	}
+
+	TEST(CfgReportTest, DirectCallsAreOpaqueAndContinuationIsConditional)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0xe8, 0x0b, 0, 0, 0, 0xc3});
+		fixture.Code(0x1010, {0xc3});
+		const auto report = Report(fixture,
+			{{0x1000, 6, L"caller", {}}, {0x1010, 1, L"callee", {}}}, {0x1005});
+		const auto& regions = report.get_child("modules").front().second.get_child("functions");
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(regions.front().second));
+		EXPECT_TRUE(Required(regions.back().second).empty());
+		std::set<std::string> kinds;
+		for (const auto& edge : regions.front().second.get_child("edges"))
+			kinds.insert(edge.second.get<std::string>("kind"));
+		EXPECT_EQ((std::set<std::string>{"opaque-direct-call", "conditional-normal-return"}), kinds);
+	}
+
+	TEST(CfgReportTest, ImportCallsAreOpaqueWithoutTreatingIatAsCode)
+	{
+		PeFixture fixture;
+		fixture.Directory(1, 0x2100, 40);
+		fixture.Rva(0x2100, 0x2200);
+		fixture.Rva(0x2110, 0x1100);
+		fixture.Rva(0x2200, 0x8000000000000001, 8);
+		fixture.Rva(0x1100, PeFixture::Base + 0x1040, 8);
+		fixture.Rva(0x1108, 0, 8);
+		fixture.Code(0x1000, {0xff, 0x15, 0xfa, 0, 0, 0, 0xc3});
+		const auto report = Report(fixture, {{0x1000, 7, L"import", {}}}, {0x1006});
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
+		std::set<std::string> kinds;
+		for (const auto& edge : FirstRegion(report).get_child("edges"))
+			kinds.insert(edge.second.get<std::string>("kind"));
+		EXPECT_EQ((std::set<std::string>{"opaque-import-call", "conditional-normal-return"}), kinds);
+	}
+
+	TEST(CfgReportTest, IndirectTransfersTrapsAmbiguityAndEligibilityAreExcluded)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0xff, 0xd0, 0xc3});
+		auto report = Report(fixture, {{0x1000, 3, L"indirect", {}}}, {0x1002});
+		EXPECT_EQ("unresolved-indirect-call", FirstRegion(report).get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+		fixture.Code(0x1000, {0xff, 0xe0});
+		report = Report(fixture, {{0x1000, 2, L"jump", {}}}, {0x1000});
+		EXPECT_EQ("unresolved-indirect-jump", FirstRegion(report).get<std::string>("exclusion"));
+		fixture.Code(0x1000, {0xcc});
+		report = Report(fixture, {{0x1000, 1, L"trap", {}}}, {0x1000});
+		EXPECT_EQ("context-transfer-or-trap", FirstRegion(report).get<std::string>("exclusion"));
+		fixture.Code(0x1000, {0x90, 0xc3});
+		report = Report(fixture, {{0x1000, 2, L"a", {}}, {0x1001, 1, L"b", {}}}, {0x1000});
+		EXPECT_EQ("ambiguous-overlapping-function-ranges", FirstRegion(report).get<std::string>("exclusion"));
+		report = Report(fixture, {{0x1000, 2, L"eh", "eh-split-or-naked-function"}}, {0x1000});
+		EXPECT_EQ("eh-split-or-naked-function", FirstRegion(report).get<std::string>("exclusion"));
+	}
+
+	TEST(CfgReportTest, Arm64GraphAndUnicodeSourceAttributionDoNotChangeImplications)
+	{
+		PeFixture fixture(0xaa64);
+		fixture.Rva(0x1000, 0x14000001);
+		fixture.Rva(0x1004, 0xd65f03c0);
+		const std::wstring name = L"quote\" slash\\ newline\n \u03bb \U0001f600";
+		const auto report = Report(fixture, {{0x1000, 8, name, {}}}, {0x1004},
+			{{L"source\\quote\".cpp", IDebugInformationHandler::Line(7, 0x1000, 1, 8)}});
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
+		ASSERT_EQ(2u, FirstRegion(report).get_child("nodes").size());
+		for (const auto& node : FirstRegion(report).get_child("nodes"))
+			EXPECT_EQ(7, node.second.get_child("source").front().second.get<int>("line"));
+	}
+
+	TEST(CfgReportTest, HybridOverridesAndOverlappingDecodesHaveNoImplications)
+	{
+		PeFixture fixture;
+		fixture.Hybrid(0xa641);
+		auto report = Report(fixture, {{0x1000, 5, L"hybrid", {}}}, {0x1000});
+		EXPECT_EQ("hybrid-or-dynamic-relocation-image",
+			report.get_child("modules").front().second.get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+		PeFixture overrideFixture;
+		overrideFixture.Code(0x1000, {0xe9, 0x3b, 0, 0, 0});
+		overrideFixture.Code(0x1040, {0xc3});
+		overrideFixture.Code(0x1060, {0xc3});
+		overrideFixture.FunctionOverride(1);
+		report = Report(overrideFixture, {{0x1000, 5, L"override", {}}}, {0x1000});
+		EXPECT_EQ("hybrid-or-dynamic-relocation-image",
+			report.get_child("modules").front().second.get<std::string>("exclusion"));
+		PeFixture overlap;
+		overlap.Code(0x1000, {0xb8, 0, 0, 0, 0, 0xeb, 0xfa});
+		report = Report(overlap, {{0x1000, 7, L"overlap", {}}}, {});
+		EXPECT_EQ("decode-overlap-or-resource-failure",
+			report.get_child("modules").front().second.get<std::string>("exclusion"));
+	}
+
+	TEST(CfgReportTest, MissingBytesAndUnwindHandlersAreExcluded)
+	{
+		PeFixture fixture;
+		fixture.Put(0x190, 2);
+		fixture.Code(0x1000, {0x90, 0x0f});
+		auto report = Report(fixture, {{0x1000, 2, L"truncated", {}}}, {0x1000});
+		EXPECT_NE("null", FirstRegion(report).get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+		PeFixture eh;
+		eh.Code(0x1000, {0xc3});
+		eh.Code(0x1020, {0xc3});
+		eh.Directory(3, 0x2000, 12);
+		eh.Rva(0x2000, 0x1000);
+		eh.Rva(0x2004, 0x1001);
+		eh.Rva(0x2008, 0x2080);
+		eh.Rva(0x2080, 9, 1);
+		eh.Rva(0x2084, 0x1020);
+		report = Report(eh, {{0x1000, 1, L"handler", {}}}, {0x1000});
+		EXPECT_EQ("eh-or-chained-unwind", FirstRegion(report).get<std::string>("exclusion"));
+	}
+
+	TEST(CfgReportTest, DecodeAndNodeLimitsExcludeRatherThanTruncateProofs)
+	{
+		PeFixture fixture;
+		fixture.ResizeText(100002);
+		fixture.Put(0x200 + 100001, 0xc3, 1);
+		auto report = Report(fixture, {{0x1000, 100002, L"large", {}}}, {});
+		EXPECT_EQ("decode-overlap-or-resource-failure",
+			report.get_child("modules").front().second.get<std::string>("exclusion"));
+		PeFixture nodes;
+		nodes.ResizeText(1027);
+		for (unsigned i = 0; i < 513; ++i)
+			nodes.Code(0x1000 + 2 * i, {0xeb, 0});
+		nodes.Code(0x1000 + 1026, {0xc3});
+		report = Report(nodes, {{0x1000, 1027, L"nodes", {}}}, {});
+		EXPECT_EQ("region-node-limit", FirstRegion(report).get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+		PeFixture implications;
+		implications.ResizeText(201);
+		std::vector<uint32_t> hits;
+		for (unsigned i = 0; i < 100; ++i)
+		{
+			implications.Code(0x1000 + 2 * i, {0xeb, 0});
+			hits.push_back(0x1000 + 2 * i);
+		}
+		implications.Code(0x1000 + 200, {0xc3});
+		hits.push_back(0x1000 + 200);
+		report = Report(implications, {{0x1000, 201, L"implication-limit", {}}}, hits);
+		EXPECT_EQ("implication-output-limit", FirstRegion(report).get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+	}
+
+	TEST(CfgReportTest, CatalogMismatchExcludesAndUnobservedSitesRemainUnknown)
+	{
+		PeFixture fixture;
+		fixture.Code(0x1000, {0x90, 0xeb, 0, 0xc3});
+		auto report = Report(fixture, {{0x1000, 4, L"catalog", {}}}, {0x1003}, {}, true);
+		EXPECT_EQ("catalog-layout-mismatch",
+			report.get_child("modules").front().second.get<std::string>("exclusion"));
+		EXPECT_TRUE(Required(FirstRegion(report)).empty());
+		report = Report(fixture, {{0x1000, 4, L"sampled", {}}}, {0x1003}, {}, false, true);
+		EXPECT_EQ((std::set<uint32_t>{0x1000}), Required(FirstRegion(report)));
+		const auto& site = FirstRegion(report).get_child("nodes").front().second.get_child("measuredSite");
+		EXPECT_FALSE(site.get<bool>("selected"));
+		EXPECT_FALSE(site.get<bool>("observed"));
+		EXPECT_FALSE(site.get<bool>("executed"));
+		const auto& original = report.get_child("modules").front().second.get_child("measuredSites").front().second;
+		EXPECT_FALSE(original.get<bool>("selected"));
+		EXPECT_FALSE(original.get<bool>("observed"));
+		EXPECT_FALSE(original.get<bool>("executed"));
 	}
 
 	TEST(BasicBlockDiscoveryTest, Amd64CallsBranchesAndReturnSites)

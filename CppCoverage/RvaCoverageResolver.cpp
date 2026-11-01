@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <fstream>
 #include <stdexcept>
 
 #include "DebugInformationEnumerator.hpp"
+#include "CfgReport.hpp"
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
 
@@ -68,8 +70,9 @@ namespace CppCoverage
 		class ResolutionHandler : public IDebugInformationHandler
 		{
 		  public:
-			ResolutionHandler(const RvaModule& module, Plugin::ModuleCoverage& output)
-			    : module_{module}, output_{output}
+			ResolutionHandler(const RvaModule& module, Plugin::ModuleCoverage& output,
+				CfgModuleInput* report, const std::filesystem::path& reportPath)
+			    : module_{module}, output_{output}, report_{report}, reportPath_{reportPath}
 			{
 			}
 
@@ -81,6 +84,16 @@ namespace CppCoverage
 			void OnSourceFile(const std::filesystem::path& path,
 			                  const std::vector<Line>& lines) override
 			{
+				if (report_)
+					for (const auto& line : lines)
+					{
+						if (report_->lines.size() >= 100000)
+						{
+							report_->resourceExhausted = true;
+							break;
+						}
+						report_->lines.push_back({path, line});
+					}
 				auto& result = files_[path];
 				for (const auto& line : lines)
 				{
@@ -104,6 +117,27 @@ namespace CppCoverage
 				}
 			}
 
+			void OnFunction(const Function& function) override
+			{
+				if (!report_)
+					return;
+				if (report_->functions.size() >= 10000)
+					report_->resourceExhausted = true;
+				else
+					report_->functions.push_back(function);
+			}
+
+			void OnPdbFile(const std::filesystem::path& path) override
+			{
+				if (reportPath_.empty())
+					return;
+				std::error_code error;
+				if (std::filesystem::equivalent(reportPath_, path, error) ||
+					std::filesystem::absolute(reportPath_).lexically_normal() ==
+						std::filesystem::absolute(path).lexically_normal())
+					throw std::runtime_error("CFG report cannot overwrite its loaded PDB");
+			}
+
 			void Finish()
 			{
 				for (const auto& file : files_)
@@ -125,6 +159,8 @@ namespace CppCoverage
 		  private:
 			const RvaModule& module_;
 			Plugin::ModuleCoverage& output_;
+			CfgModuleInput* report_;
+			const std::filesystem::path& reportPath_;
 			struct LineState
 			{
 				bool executed = false;
@@ -137,9 +173,11 @@ namespace CppCoverage
 	Plugin::CoverageData RvaCoverageResolver::Resolve(
 	    const RvaCoverage& coverage,
 	    const std::vector<std::filesystem::path>& moduleDirectories,
-	    const std::vector<SubstitutePdbSourcePath>& substitutions) const
+	    const std::vector<SubstitutePdbSourcePath>& substitutions,
+	    const std::filesystem::path& cfgReportPath) const
 	{
 		Plugin::CoverageData output(coverage.name, coverage.exitCode);
+		std::vector<CfgModuleInput> report;
 		const auto symbolSearchPath = SymbolSearchPath();
 		for (const auto& module : coverage.modules)
 		{
@@ -155,14 +193,37 @@ namespace CppCoverage
 				end = uint64_t{block.rva} + block.size;
 			}
 			const auto image = FindModule(module, moduleDirectories);
+			if (!cfgReportPath.empty())
+			{
+				auto pdb = image;
+				pdb.replace_extension(L".pdb");
+				for (const auto& protectedPath : {image, pdb})
+				{
+					std::error_code error;
+					if (std::filesystem::equivalent(cfgReportPath, protectedPath, error) ||
+						std::filesystem::absolute(cfgReportPath).lexically_normal() ==
+							std::filesystem::absolute(protectedPath).lexically_normal())
+						throw std::runtime_error("CFG report cannot overwrite its image or PDB");
+				}
+			}
 			auto& resolvedModule = output.AddModule(image);
-			ResolutionHandler handler(module, resolvedModule);
+			if (!cfgReportPath.empty())
+				report.push_back({image, module, {}, {}, false});
+			ResolutionHandler handler(module, resolvedModule,
+				cfgReportPath.empty() ? nullptr : &report.back(), cfgReportPath);
 			DebugInformationEnumerator enumerator(substitutions, symbolSearchPath);
 			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_NOT_FOUND),
-				!enumerator.Enumerate(image, handler),
+				!enumerator.Enumerate(image, handler, !cfgReportPath.empty()),
 				"Cannot load matching PDB for RVA coverage module: %ls. "
 				"Place its PDB beside the image or set _NT_SYMBOL_PATH.", image.c_str());
 			handler.Finish();
+		}
+		if (!cfgReportPath.empty())
+		{
+			std::ofstream file(cfgReportPath, std::ios::binary | std::ios::trunc);
+			if (!file)
+				throw std::runtime_error("Cannot open CFG report");
+			WriteCfgReport(file, report);
 		}
 		return output;
 	}

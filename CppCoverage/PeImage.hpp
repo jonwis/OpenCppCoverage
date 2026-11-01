@@ -57,6 +57,8 @@ namespace CppCoverage
 		bool VaToRva(uint64_t va, uint32_t& rva) const;
 		bool IsImportSlot(uint32_t rva) const;
 		bool ImportTarget(uint32_t slotRva, uint32_t& targetRva) const;
+		bool SupportsCfgReport() const { return !hybrid_ && !hasDynamicRelocations_; }
+		const std::vector<BasicBlock>& UnsafeUnwindRanges() const { return unsafeUnwindRanges_; }
 		std::vector<uint32_t> FunctionOverrideRelocations() const;
 		void ApplyFunctionOverrideRelocation(uint32_t rva, uint32_t value);
 		// Compares code after declared function overrides and DIR64 base relocation.
@@ -107,6 +109,8 @@ namespace CppCoverage
 		uint32_t entryPoint_ = 0;
 		bool hybrid_ = false;
 		bool importsReady_ = false;
+		bool hasDynamicRelocations_ = false;
+		std::vector<BasicBlock> unsafeUnwindRanges_;
 		std::array<Directory, 16> directories_{};
 		std::vector<Section> sections_;
 		std::vector<BasicBlock> codeRanges_;

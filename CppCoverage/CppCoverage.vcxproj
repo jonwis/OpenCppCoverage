@@ -341,6 +341,7 @@
   <ItemGroup>
     <ClInclude Include="PeImage.hpp" />
     <ClInclude Include="BasicBlockDiscovery.hpp" />
+    <ClInclude Include="CfgReport.hpp" />
     <ClInclude Include="ArchitectureBreakpoint.hpp" />
     <ClInclude Include="BreakpointJournal.hpp" />
     <ClCompile Include="BreakpointJournal.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
@@ -358,6 +359,7 @@
     <ClCompile Include="ProcessFilter.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="PeImage.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="BasicBlockDiscovery.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="CfgReport.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="ArchitectureBreakpoint.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverage.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverageResolver.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>

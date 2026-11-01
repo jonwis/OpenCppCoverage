@@ -265,6 +265,51 @@ Place PDBs beside the images or configure `_NT_SYMBOL_PATH`.
 Existing HTML, Cobertura, binary, and plugin exporters remain available.
 Resolve raw coverage before merging it with source coverage.
 
+#### Conditional CFG implication report
+
+Add `--cfg-report` during resolution to write a separate JSON report:
+
+```powershell
+.\OpenCppCoverage.exe --resolve .\run.cov --cfg-report .\cfg.json --export_type cobertura:coverage.xml
+```
+
+Schema version 1 reports `required-on-normal-entry-paths`. Its implications
+identify strict dominators of measured sites under explicit normal-flow and
+entry assumptions. Matching image identity, file hash, PDB machine-function
+ranges, and the original block catalog are required. Edges come from decoded
+instructions; source lines provide attribution.
+
+The report sets `temporalProvenance` to `unknown` and
+`withinWindowExecutionClaim` to `false`. A later hit can follow a dominator
+executed before an attach or capture began. Implications therefore do not
+establish execution within the observation window. Missing hits establish no
+negative implications. Measured `selected`, `observed`, and `executed` flags
+remain separate from structural implications, and refined interior nodes are
+not additional measured sites. Raw coverage and ordinary exports are unchanged.
+
+Native AMD64 and ARM64 regions are supported. Each region uses a synthetic root
+for PDB function starts, PE metadata roots, and decoded direct entries from
+outside the region. Calls are opaque; their continuation assumes normal return
+and establishes no callee or future-successor execution claim. Unlisted interior
+entries, callbacks, exceptions, and context transfers violate the stated model.
+Hybrid and dynamic-relocation images, ambiguous or incomplete function ranges,
+EH/chained unwind, unresolved indirect transfers, and unvalidated decoding
+produce explicit exclusions without implications.
+Unavailable DIA eligibility annotations also exclude a region; their absence
+does not certify that its function has no split code or exception handling.
+Each implication references the reported immediate-dominator tree as its
+structural witness.
+
+Analysis is bounded: 100,000 decoded instructions and source records, 10,000
+functions, 8,192 module nodes, 512 region nodes, and 4,096 implications per
+region. The separate measured-site inventory is capped at 8,192 entries, with
+an explicit exclusion and original count above that limit.
+Work limits also produce exclusions. Source attribution is capped at
+16 records per node and marks `sourceTruncated` when additional records exist.
+Module filters apply before analysis; source filters affect ordinary exports
+without changing the CFG. The report path must be separate from the input,
+matching images/PDBs, and coverage export paths.
+
 #### View a capture in Visual Studio 2026
 
 On the symbol machine, use PowerShell 7.2 or later:

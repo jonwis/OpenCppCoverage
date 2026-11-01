@@ -122,8 +122,8 @@ namespace CppCoverage
 		//----------------------------------------------------------------------
 		struct DiaLoadCallback : public IDiaLoadCallback
 		{
-			explicit DiaLoadCallback(bool allowSymbolServer)
-			    : allowSymbolServer_{allowSymbolServer}
+			explicit DiaLoadCallback(bool allowSymbolServer, std::filesystem::path* openedPdb)
+			    : allowSymbolServer_{allowSymbolServer}, openedPdb_{openedPdb}
 			{
 			}
 
@@ -176,6 +176,17 @@ namespace CppCoverage
 			HRESULT STDMETHODCALLTYPE NotifyOpenPDB(LPCOLESTR pdbPath,
 			                                        HRESULT resultCode) override
 			{
+				if (openedPdb_ && pdbPath && resultCode == S_OK)
+				{
+					try
+					{
+						*openedPdb_ = pdbPath;
+					}
+					catch (...)
+					{
+						return E_OUTOFMEMORY;
+					}
+				}
 				LOG_DEBUG << "Try to load pdb from " << pdbPath << ": "
 				          << (resultCode == S_OK ? "Success" : "Failed");
 				return S_OK;
@@ -194,12 +205,13 @@ namespace CppCoverage
 			}
 
 			const bool allowSymbolServer_;
+			std::filesystem::path* openedPdb_;
 		};
 
 		//----------------------------------------------------------------------
 		ComPtr<IDiaDataSource>
 		LoadDataForExe(const std::filesystem::path& path,
-		               const std::wstring& symbolSearchPath)
+		               const std::wstring& symbolSearchPath, std::filesystem::path* openedPdb)
 		{
 			ComPtr<IDiaDataSource> sourcePtr;
 
@@ -213,7 +225,7 @@ namespace CppCoverage
 				      msDia + L" is in the current directory.");
 			}
 
-			DiaLoadCallback diaLoadCallback(!symbolSearchPath.empty());
+			DiaLoadCallback diaLoadCallback(!symbolSearchPath.empty(), openedPdb);
 			if (!sourcePtr ||
 			    sourcePtr->loadDataForExe(
 			        path.wstring().c_str(),
@@ -244,16 +256,65 @@ namespace CppCoverage
 	//-------------------------------------------------------------------------
 	bool
 	DebugInformationEnumerator::Enumerate(const std::filesystem::path& path,
-	                                      IDebugInformationHandler& handler)
+	                                      IDebugInformationHandler& handler, bool enumerateFunctions)
 	{
-		auto sourcePtr = LoadDataForExe(path, symbolSearchPath_);
+		std::filesystem::path openedPdb;
+		auto sourcePtr = LoadDataForExe(path, symbolSearchPath_, &openedPdb);
 
 		if (!sourcePtr)
 			return false;
+		if (!openedPdb.empty())
+			handler.OnPdbFile(openedPdb);
 
 		ComPtr<IDiaSession> sessionPtr;
 		if (sourcePtr->openSession(&sessionPtr) != S_OK || !sessionPtr)
 			THROW("DIA: Cannot open session.");
+
+		if (enumerateFunctions)
+		{
+			ComPtr<IDiaSymbol> global;
+			ComPtr<IDiaEnumSymbols> compilands;
+			if (sessionPtr->get_globalScope(&global) != S_OK || !global ||
+				global->findChildren(SymTagCompiland, nullptr, nsNone, &compilands) != S_OK || !compilands)
+				THROW("DIA: Cannot enumerate machine functions.");
+			EnumerateCollection<IDiaSymbol>(*compilands.Get(), [&](IDiaSymbol& compiland) {
+				ComPtr<IDiaEnumSymbols> functions;
+				if (compiland.findChildren(SymTagFunction, nullptr, nsNone, &functions) != S_OK || !functions)
+					THROW("DIA: Cannot enumerate compiland functions.");
+				EnumerateCollection<IDiaSymbol>(*functions.Get(), [&](IDiaSymbol& symbol) {
+					IDebugInformationHandler::Function function;
+					DWORD rva = 0;
+					ULONGLONG length = 0;
+					DiaString name;
+					symbol.get_name(&name);
+					function.name = name;
+					if (symbol.get_relativeVirtualAddress(&rva) != S_OK ||
+						symbol.get_length(&length) != S_OK || !length)
+						function.exclusion = "missing-machine-function-range";
+					function.rva = rva;
+					function.size = length;
+					BOOL eh = FALSE, seh = FALSE, eha = FALSE, split = FALSE, naked = FALSE;
+					const auto ehResult = symbol.get_hasEH(&eh);
+					const auto sehResult = symbol.get_hasSEH(&seh);
+					const auto ehaResult = symbol.get_hasEHa(&eha);
+					const auto splitResult = symbol.get_isSplitted(&split);
+					const auto nakedResult = symbol.get_isNaked(&naked);
+					if (ehResult != S_OK)
+						function.exclusion = "unknown-function-eligibility:hasEH";
+					else if (sehResult != S_OK)
+						function.exclusion = "unknown-function-eligibility:hasSEH";
+					else if (ehaResult != S_OK)
+						function.exclusion = "unknown-function-eligibility:hasEHa";
+					else if (splitResult != S_OK)
+						function.exclusion = "unknown-function-eligibility:isSplitted";
+					else if (nakedResult != S_OK)
+						function.exclusion = "unknown-function-eligibility:isNaked";
+					else if (eh || seh || eha || split || naked)
+						function.exclusion = "eh-split-or-naked-function";
+					handler.OnFunction(function);
+				});
+			});
+		}
 
 		auto sourceFiles = GetEnumSourceFiles(*sessionPtr.Get());
 		if (!sourceFiles)

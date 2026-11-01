@@ -501,6 +501,16 @@ namespace CppCoverage
 				options.AddModuleDirectory(directory);
 			}
 		}
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::CfgReportOption))
+		{
+			if (!options.GetResolvePath() || path->empty())
+				throw Plugin::OptionsParserException("--cfg-report requires --resolve and a nonempty output path.");
+			std::error_code error;
+			if (fs::equivalent(*path, *options.GetResolvePath(), error) ||
+				fs::absolute(*path).lexically_normal() == fs::absolute(*options.GetResolvePath()).lexically_normal())
+				throw Plugin::OptionsParserException("--cfg-report cannot overwrite its RVA input.");
+			options.SetCfgReportPath(*path);
+		}
 		if (options.IsSymbolFreeModeEnabled() &&
 			(options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
 			throw Plugin::OptionsParserException("--symbol-free cannot be combined with --resolve or --input_coverage.");
@@ -547,6 +557,16 @@ namespace CppCoverage
 
 		for (const auto& optionParser : optionParsers_)
 			optionParser->ParseOption(variablesMap, options);
+		if (options.GetCfgReportPath())
+			for (const auto& output : options.GetExports())
+				if (output.GetParameter())
+				{
+					std::error_code error;
+					if (fs::equivalent(*options.GetCfgReportPath(), *output.GetParameter(), error) ||
+						fs::absolute(*options.GetCfgReportPath()).lexically_normal() ==
+							fs::absolute(*output.GetParameter()).lexically_normal())
+						throw Plugin::OptionsParserException("--cfg-report requires a path separate from coverage exports.");
+				}
 		if (options.IsSymbolFreeModeEnabled())
 		{
 			for (const auto& output : options.GetExports())

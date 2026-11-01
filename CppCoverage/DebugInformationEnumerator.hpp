@@ -34,6 +34,13 @@ namespace CppCoverage
 	class IDebugInformationHandler
 	{
 	  public:
+		struct Function
+		{
+			uint32_t rva = 0;
+			uint64_t size = 0;
+			std::wstring name;
+			std::string exclusion;
+		};
 		struct Line
 		{
 			Line(unsigned long lineNumber,
@@ -60,6 +67,8 @@ namespace CppCoverage
 		virtual bool IsSourceFileSelected(const std::filesystem::path&) = 0;
 		virtual void OnSourceFile(const std::filesystem::path&,
 		                          const std::vector<Line>&) = 0;
+		virtual void OnFunction(const Function&) {}
+		virtual void OnPdbFile(const std::filesystem::path&) {}
 	};
 
 	//-------------------------------------------------------------------------
@@ -70,7 +79,7 @@ namespace CppCoverage
 		DebugInformationEnumerator(const std::vector<SubstitutePdbSourcePath>&,
 		                           const std::wstring& symbolSearchPath);
 		bool Enumerate(const std::filesystem::path&,
-		               IDebugInformationHandler&);
+		               IDebugInformationHandler&, bool enumerateFunctions = false);
 
 	  private:
 		void
