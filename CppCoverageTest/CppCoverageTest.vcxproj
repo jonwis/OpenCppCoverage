@@ -248,7 +248,6 @@
     <ClCompile Include="CoverageDataMergerTest.cpp" />
     <ClCompile Include="CppCliTest.cpp" />
     <ClCompile Include="DebugInformationEnumeratorTest.cpp" />
-    <None Include="OptimizedBuildVS2013\OptimizedBuildVS2013\OptimizedBuildVS2013.cpp" />
     <ClCompile Include="FilterAssistantTest.cpp" />
     <ClCompile Include="UnifiedDiffCoverageFilterManagerTest.cpp" />
     <ClCompile Include="OptionsParserUnifiedDiffTest.cpp" />
@@ -303,10 +302,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="Data\TestDiff.diff" />
-    <None Include="OptimizedBuildVS2013\OptimizedBuildVS2013.sln" />
-    <None Include="OptimizedBuildVS2013\OptimizedBuildVS2013\OptimizedBuildVS2013.vcxproj" />
-    <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.exe" />
-    <None Include="OptimizedBuildVS2013\Release\OptimizedBuildVS2013.pdb" />
   </ItemGroup>
   <ItemDefinitionGroup>
     <Link>

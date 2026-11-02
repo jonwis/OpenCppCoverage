@@ -23,6 +23,7 @@
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
 #include "Tools/Tool.hpp"
+#include "TestCoverageConsole/TestCoverageConsole.hpp"
 
 namespace CppCoverageTest
 {
@@ -645,6 +646,36 @@ namespace CppCoverageTest
 		boost::property_tree::read_json(cliReportFile, cliJson);
 		EXPECT_FALSE(cliJson.get<bool>("withinWindowExecutionClaim"));
 		EXPECT_THROW(cov::RvaCoverageResolver{}.Resolve(raw, {}, {}, binary), std::runtime_error);
+	}
+
+	TEST_F(RvaCoverageTest, OptimizedBuildCollectionResolvesNativeSource)
+	{
+		const auto folder = Tools::GetExecutableFolder();
+		const auto binary = folder / L"TestCoverageOptimizedBuild.dll";
+		std::string diagnostic;
+		ASSERT_EQ(0, Tools::RunProcess(folder / L"OpenCppCoverage.exe",
+			{L"--symbol-free", L"--modules", binary.wstring(),
+				L"--export_type", L"binary:" + path_.wstring(), L"--",
+				(folder / L"TestCoverageConsole.exe").wstring(),
+				TestCoverageConsole::TestOptimizedBuild},
+			&diagnostic, true)) << diagnostic;
+		const auto raw = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(0, raw.exitCode);
+		ASSERT_EQ(1u, raw.modules.size());
+		EXPECT_TRUE(std::any_of(raw.modules.front().blocks.begin(), raw.modules.front().blocks.end(),
+			[](const cov::RvaBlock& block) { return block.executed; }));
+
+		const auto resolved = cov::RvaCoverageResolver{}.Resolve(raw, {}, {});
+		ASSERT_EQ(1u, resolved.GetModules().size());
+		bool sourceCovered = false;
+		for (const auto& file : resolved.GetModules().front()->GetFiles())
+			if (file->GetPath().filename() == L"TestCoverageOptimizedBuild.cpp")
+			{
+				const auto& lines = file->GetLines();
+				sourceCovered = sourceCovered || std::any_of(lines.begin(), lines.end(),
+					[](const auto& line) { return line.HasBeenExecuted(); });
+			}
+		EXPECT_TRUE(sourceCovered);
 	}
 
 	TEST_F(RvaCoverageTest, NativeMatchingPdbProducesConditionalChainWithoutChangingMeasuredExports)

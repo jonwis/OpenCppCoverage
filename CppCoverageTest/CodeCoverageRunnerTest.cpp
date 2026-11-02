@@ -411,17 +411,13 @@ namespace CppCoverageTest
 	//-------------------------------------------------------------------------
 	TEST_F(CodeCoverageRunnerTest, OptimizedBuild)
 	{
-		CoverageArgs args{{}, L"OptimizedBuildVS2013", L"OptimizedBuildVS2013"};
-		auto optimizedBuildProjectPath = fs::path{ PROJECT_DIR } / "OptimizedBuildVS2013";
-		args.programToRun_ = optimizedBuildProjectPath /
-		                     "Release" / "OptimizedBuildVS2013.exe";
-
-		if (!Tools::FileExists(args.programToRun_))
-		{
-			throw std::runtime_error(
-				"You need to compile " + optimizedBuildProjectPath.string() +
-				" in release mode with Visual Studio 2013 to run this test.");
-		}
+#if defined(_M_ARM64)
+		GTEST_SKIP() << "The legacy symbol-based collector requires x86 or x64.";
+#else
+		CoverageArgs args{
+			{TestCoverageConsole::TestOptimizedBuild},
+			TestCoverageOptimizedBuild::GetOutputBinaryPath().wstring(),
+			TestCoverageOptimizedBuild::GetMainCppPath().wstring()};
 
 		auto computeCoverage = [&](bool optimizedBuild) {
 			args.optimizedBuildSupport_ = optimizedBuild;
@@ -429,7 +425,7 @@ namespace CppCoverageTest
 		};
 
 		auto coverageData = computeCoverage(false);
-		ASSERT_NE(0, coverageData.GetExitCode());
+		ASSERT_EQ(0, coverageData.GetExitCode());
 
 		auto coverageDataOptimizedBuild = computeCoverage(true);
 		ASSERT_EQ(0, coverageDataOptimizedBuild.GetExitCode());
@@ -437,10 +433,12 @@ namespace CppCoverageTest
 		const auto& fileOptimizedBuild =
 		    GetFirstFileCoverage(coverageDataOptimizedBuild);
 		const auto& file = GetFirstFileCoverage(coverageData);
-		auto optimizedBuildCount = CountExecutedLines(fileOptimizedBuild);
-		auto count = CountExecutedLines(file);
-
-		ASSERT_GT(optimizedBuildCount, count);
+		ASSERT_GT(CountExecutedLines(file), 0);
+		ASSERT_EQ(file.GetLines().size(), fileOptimizedBuild.GetLines().size());
+		for (const auto& line : file.GetLines())
+			if (line.HasBeenExecuted())
+				TestLine(fileOptimizedBuild, line.GetLineNumber(), true);
+#endif
 	}
 
 	//-------------------------------------------------------------------------
