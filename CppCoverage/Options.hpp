@@ -66,6 +66,16 @@ namespace CppCoverage
 		const boost::optional<std::filesystem::path>& GetResolvePath() const { return resolvePath_; }
 		void SetCfgReportPath(const std::filesystem::path& path) { cfgReportPath_ = path; }
 		const boost::optional<std::filesystem::path>& GetCfgReportPath() const { return cfgReportPath_; }
+		void SetRvasPath(const std::filesystem::path& path) { rvasPath_ = path; }
+		const boost::optional<std::filesystem::path>& GetRvasPath() const { return rvasPath_; }
+		void SetMakeRvasPath(const std::filesystem::path& path) { makeRvasPath_ = path; }
+		const boost::optional<std::filesystem::path>& GetMakeRvasPath() const { return makeRvasPath_; }
+		void SetDiffPath(const std::filesystem::path& path) { diffPath_ = path; }
+		const boost::optional<std::filesystem::path>& GetDiffPath() const { return diffPath_; }
+		void SetSourceRoot(const std::filesystem::path& path) { sourceRoot_ = path; }
+		const boost::optional<std::filesystem::path>& GetSourceRoot() const { return sourceRoot_; }
+		void SetExpandLines(unsigned lines) { expandLines_ = lines; }
+		unsigned GetExpandLines() const { return expandLines_; }
 		void AddModuleDirectory(const std::filesystem::path& path) { moduleDirectories_.push_back(path); }
 		const std::vector<std::filesystem::path>& GetModuleDirectories() const { return moduleDirectories_; }
 
@@ -122,6 +132,11 @@ namespace CppCoverage
 		boost::optional<uint32_t> duration_;
 		boost::optional<std::filesystem::path> resolvePath_;
 		boost::optional<std::filesystem::path> cfgReportPath_;
+		boost::optional<std::filesystem::path> rvasPath_;
+		boost::optional<std::filesystem::path> makeRvasPath_;
+		boost::optional<std::filesystem::path> diffPath_;
+		boost::optional<std::filesystem::path> sourceRoot_;
+		unsigned expandLines_ = 10;
 		std::vector<std::filesystem::path> moduleDirectories_;
 
 		LogLevel logLevel_;

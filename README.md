@@ -156,6 +156,84 @@ loader function-override values. Blocks already covered are left uninstrumented;
 breakpoints in resident instances are retired at that process's next stopped
 debug event. Queued breakpoint exceptions remain recognized.
 
+#### Capture changed regions with an RVA selection plan
+
+The investigator maps a source delta to basic blocks on a machine with matching
+images and PDBs. A portable ROI (regions of interest) file carries that selection
+to the test machine. This moves source selection before collection, reducing
+probe installation and breakpoint events without requiring symbols in the test
+environment.
+
+Generate the diff against the source revision used for the binaries. For a PR
+head build, use the PR's pinned base and head commits. For a tested merge build,
+use a diff whose new-file coordinates describe that merge revision.
+
+```powershell
+git diff --find-renames --unified=0 base...HEAD --output=changes.diff
+.\OpenCppCoverage.exe --make-rvas roi.json --diff changes.diff --source-root C:\src --module-dir C:\build --modules "*MyLibrary.dll" --expand-lines 10
+```
+
+`--module-dir` and `--module_dir` are aliases and accept multiple directories.
+Module filters restrict the investigator's image inventory. Matching PDBs can
+be beside the images or available through `_NT_SYMBOL_PATH`. Use
+`--substitute_pdb_source_path` when PDB source roots differ from the checkout.
+The source checkout must match the built files; source checksum mismatches and
+ambiguous mappings are errors. Verification diagnostics are retained in the
+local explanation report.
+When checksums or inline provenance are unavailable, the report marks the
+selection partial. Review its diagnostics before using the plan.
+
+`--expand-lines` defaults to 10 on each side of each changed region. Zero selects
+changed lines only. Expansion happens before line-to-code mapping, is clamped
+to the file, and merges overlapping regions. Changes at lines 33-35 and 38
+select lines 23-48 with the default, or 28-43 with `--expand-lines 5`.
+Context already present in the diff does not add another expansion. Pure
+deletions select the surviving neighbors of the deletion point; removed files
+have no new-image code.
+
+The investigator maps source regions to PDB address ranges and selects every
+overlapping discovered block. This can include a block whose start belongs to
+an earlier line. Probe addresses always come from the PE/disassembler catalog.
+Selected source instances in different supplied modules remain separate
+image-bound selections.
+
+The versioned JSON stores image identities, catalog digests, and selected
+`{rva, size, isa}` tuples. Image names are hints; image SHA-256 and the admitted
+catalog bind the selection to its build and layout. The portable file contains
+no source paths, source files, images, or PDBs. The sibling
+`roi.json.explain.json` stays on the investigator machine and records expanded
+regions, mappings, and unmapped or non-executable source diagnostics.
+
+Copy `roi.json` to the test environment:
+
+```powershell
+.\OpenCppCoverage.exe --rvas roi.json --export_type binary:run.cov -- .\MyProgram.exe
+```
+
+`--rvas` implies symbol-free collection. Only planned blocks receive coverage
+probes; module and process filters can restrict the plan further. Explicit
+`--sample-percent` cannot be combined with `--rvas`. Empty selections capture
+nothing. Image or catalog mismatches fail before installing that module's
+coverage probes. Native x64, ARM64, and supported ARM64EC views retain their
+normal mapped-code and instruction-set checks.
+
+Collection still discovers and validates the full catalog once per admitted
+image and reuses the selection across reloads and contributing processes. The
+raw capture retains that catalog and its selected/observed flags. Omitted
+blocks stay unknown; selecting a block supplies no execution evidence.
+The run summary identifies planned modules that were not observed.
+
+Bring the capture back to the symbol machine for ordinary resolution:
+
+```powershell
+.\OpenCppCoverage.exe --resolve run.cov --module-dir C:\build --export_type cobertura:coverage.xml
+```
+
+The recorded mask is sufficient for resolution; the ROI file is not required.
+Measured hits and fully observed negatives keep the same semantics as sampled
+captures. ROI selection does not turn conditional CFG implications into
+measured coverage.
+
 #### Select contributors in a launched process tree
 
 `--processes` and `--excluded_processes` select main executables independently

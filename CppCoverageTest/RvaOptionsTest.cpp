@@ -2,6 +2,8 @@
 
 #include <optional>
 #include <sstream>
+#include <string>
+#include <vector>
 
 #include "CppCoverage/Options.hpp"
 #include "CppCoverage/OptionsParser.hpp"
@@ -14,14 +16,15 @@
 namespace
 {
 	boost::optional<CppCoverage::Options> ParseRvaOptions(
-		std::initializer_list<const char*> arguments)
+		const std::vector<std::string>& arguments)
 	{
 		std::vector<std::unique_ptr<CppCoverage::IOptionParser>> parsers;
 		parsers.push_back(std::make_unique<CppCoverage::ExportOptionParser>(
 			std::vector<CppCoverage::ExportPluginDescription>{}));
 		CppCoverage::OptionsParser parser{nullptr, std::move(parsers)};
 		std::vector<const char*> argv{"OpenCppCoverage"};
-		argv.insert(argv.end(), arguments.begin(), arguments.end());
+		for (const auto& argument : arguments)
+			argv.push_back(argument.c_str());
 		std::wostringstream explanation;
 		return parser.Parse(static_cast<int>(argv.size()), argv.data(), &explanation);
 	}
@@ -77,6 +80,58 @@ TEST(RvaOptionsTest, SamplingRejectsInvalidPercentagesAndOtherModes)
 	EXPECT_FALSE(ParseRvaOptions({"--resolve", __FILE__, "--sample-percent", "50"}));
 	EXPECT_FALSE(ParseRvaOptions({"--symbol-free", "--resolve", __FILE__,
 	    "--sample-percent", "50"}));
+}
+
+TEST(RvaOptionsTest, RoiSelectionImpliesSymbolFreeAndSupportsBoundedAttach)
+{
+	auto launched = ParseRvaOptions({"--rvas", __FILE__, "--", "test.exe"});
+	ASSERT_TRUE(launched);
+	EXPECT_TRUE(launched->IsSymbolFreeModeEnabled());
+	ASSERT_TRUE(launched->GetRvasPath());
+	EXPECT_EQ(std::filesystem::path{__FILE__}, *launched->GetRvasPath());
+	auto attached = ParseRvaOptions({"--rvas", __FILE__, "--processes", "test.exe", "--duration", "1"});
+	ASSERT_TRUE(attached);
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", __FILE__, "--processes", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", __FILE__, "--sample-percent", "100", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", __FILE__, "--sample-percent", "50", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", __FILE__, "--resolve", __FILE__}));
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", __FILE__, "--sources", "*", "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--rvas", "missing-roi-selection.json", "--", "test.exe"}));
+}
+
+TEST(RvaOptionsTest, RoiInvestigatorRequiresInputsAndDefaultsToTenContextLines)
+{
+	const auto root = std::filesystem::current_path().string();
+	std::vector<std::string> arguments{"--make-rvas", "roi.json", "--diff", __FILE__,
+		"--source-root", root, "--module-dir", root};
+	auto options = ParseRvaOptions(arguments);
+	ASSERT_TRUE(options);
+	ASSERT_TRUE(options->GetMakeRvasPath());
+	EXPECT_FALSE(options->GetStartInfo());
+	EXPECT_FALSE(options->IsSymbolFreeModeEnabled());
+	EXPECT_EQ(10u, options->GetExpandLines());
+	ASSERT_EQ(1u, options->GetModuleDirectories().size());
+	for (const auto* context : {"0", "5", "10"})
+	{
+		auto expanded = arguments;
+		expanded.insert(expanded.end(), {"--expand-lines", context});
+		auto parsed = ParseRvaOptions(expanded);
+		ASSERT_TRUE(parsed);
+		EXPECT_EQ(static_cast<unsigned>(std::stoi(context)), parsed->GetExpandLines());
+	}
+	for (const auto& extra : std::vector<std::vector<std::string>>{
+		{"--expand-lines", "-1"},
+		{"--", "test.exe"}, {"--symbol-free"}, {"--resolve", __FILE__},
+		{"--rvas", __FILE__}, {"--export_type", "binary"}, {"--sources", "*"},
+		{"--duration", "1"}, {"--cover_children"}})
+	{
+		auto invalid = arguments;
+		invalid.insert(invalid.end(), extra.begin(), extra.end());
+		EXPECT_FALSE(ParseRvaOptions(invalid)) << extra.front();
+	}
+	EXPECT_FALSE(ParseRvaOptions({"--make-rvas", "roi.json"}));
+	EXPECT_FALSE(ParseRvaOptions({"--diff", __FILE__, "--", "test.exe"}));
+	EXPECT_FALSE(ParseRvaOptions({"--expand-lines", "10", "--", "test.exe"}));
 }
 
 TEST(RvaOptionsTest, CollectionRejectsReportsAndSourceFilters)

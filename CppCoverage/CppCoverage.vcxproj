@@ -355,6 +355,7 @@
     <ClInclude Include="RvaCoverage.hpp" />
     <ClInclude Include="RvaCoverageResolver.hpp" />
     <ClInclude Include="RvaCoverageRunner.hpp" />
+    <ClInclude Include="RvaSelectionPlan.hpp" />
     <ClInclude Include="ProcessFilter.hpp" />
     <ClCompile Include="ProcessFilter.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="PeImage.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
@@ -364,5 +365,6 @@
     <ClCompile Include="RvaCoverage.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverageResolver.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverageRunner.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="RvaSelectionPlan.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
   </ItemGroup>
 </Project>

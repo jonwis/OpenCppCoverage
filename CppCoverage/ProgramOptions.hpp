@@ -60,6 +60,12 @@ namespace CppCoverage
 		static const std::string ResolveOption;
 		static const std::string CfgReportOption;
 		static const std::string ModuleDirectoryOption;
+		static const std::string ModuleDirectoryAliasOption;
+		static const std::string RvasOption;
+		static const std::string MakeRvasOption;
+		static const std::string DiffOption;
+		static const std::string SourceRootOption;
+		static const std::string ExpandLinesOption;
 
 		explicit ProgramOptions(const std::vector<std::unique_ptr<IOptionParser>>&);
 

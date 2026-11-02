@@ -15,6 +15,8 @@
 #include "CppCoverage/RvaCoverage.hpp"
 #include "CppCoverage/RvaCoverageResolver.hpp"
 #include "CppCoverage/RvaCoverageRunner.hpp"
+#include "CppCoverage/RvaSelectionPlan.hpp"
+#include "CppCoverage/Patterns.hpp"
 #include "CppCoverage/DebugInformationEnumerator.hpp"
 #include "CppCoverage/CfgReport.hpp"
 #include <boost/property_tree/json_parser.hpp>
@@ -23,6 +25,7 @@
 #include "Plugin/Exporter/FileCoverage.hpp"
 #include "Plugin/Exporter/ModuleCoverage.hpp"
 #include "Tools/Tool.hpp"
+#include "Tools/ScopedAction.hpp"
 #include "TestCoverageConsole/TestCoverageConsole.hpp"
 
 namespace CppCoverageTest
@@ -676,6 +679,300 @@ namespace CppCoverageTest
 					[](const auto& line) { return line.HasBeenExecuted(); });
 			}
 		EXPECT_TRUE(sourceCovered);
+	}
+
+	TEST(RvaCoverageSamplingTest, RoiMaskSelectsExactBlocksAndKeepsOmittedSitesUnknown)
+	{
+		const std::vector<cov::BasicBlock> catalog{
+			{0x1000, 4, cov::InstructionSet::Arm64},
+			{0x1010, 8, cov::InstructionSet::Arm64},
+			{0x1020, 4, cov::InstructionSet::Arm64}};
+		std::vector<cov::RvaBlock> blocks;
+		for (const auto& block : catalog)
+			blocks.push_back({block, true});
+		cov::RvaSelectionModule selected;
+		selected.catalogSha256 = cov::RvaCatalogSha256(catalog);
+		selected.blocks = {catalog[1]};
+		cov::RvaCoverageSampling{}.Select(blocks, selected);
+		for (size_t i = 0; i < blocks.size(); ++i)
+		{
+			EXPECT_EQ(i == 1, blocks[i].selected);
+			EXPECT_FALSE(blocks[i].observed);
+			EXPECT_FALSE(blocks[i].executed);
+		}
+		selected.blocks.clear();
+		cov::RvaCoverageSampling{}.Select(blocks, selected);
+		EXPECT_TRUE(std::none_of(blocks.begin(), blocks.end(),
+			[](const cov::RvaBlock& block) { return block.selected || block.observed || block.executed; }));
+	}
+
+	TEST(RvaCoverageSamplingTest, RoiMaskRejectsStaleLayoutsAndInvalidBlockTuples)
+	{
+		const std::vector<cov::BasicBlock> catalog{
+			{0x1000, 4, cov::InstructionSet::Arm64}, {0x1010, 8, cov::InstructionSet::Arm64}};
+		std::vector<cov::RvaBlock> blocks;
+		for (const auto& block : catalog)
+			blocks.push_back({block, true});
+		cov::RvaSelectionModule selected;
+		selected.catalogSha256 = cov::RvaCatalogSha256(catalog);
+		for (const auto& invalid : std::vector<std::vector<cov::BasicBlock>>{
+			{{0x1001, 4, cov::InstructionSet::Arm64}},
+			{{0x1000, 8, cov::InstructionSet::Arm64}},
+			{{0x1000, 4, cov::InstructionSet::Amd64}},
+			{catalog[0], catalog[0]}, {catalog[1], catalog[0]}})
+		{
+			selected.blocks = invalid;
+			EXPECT_THROW(cov::RvaCoverageSampling{}.Select(blocks, selected), std::exception);
+			EXPECT_TRUE(blocks.front().executed);
+		}
+		selected.blocks = {catalog[0]};
+		selected.catalogSha256[0] = selected.catalogSha256[0] == '0' ? '1' : '0';
+		EXPECT_THROW(cov::RvaCoverageSampling{}.Select(blocks, selected), std::exception);
+		EXPECT_TRUE(blocks.front().executed);
+	}
+
+	TEST_F(RvaCoverageTest, RoiPlanCollectsOnlyRequestedNativeBlocks)
+	{
+		const auto folder = Tools::GetExecutableFolder();
+		const auto binary = folder / L"TestCoverageOptimizedBuild.dll";
+		cov::PeImage image(binary);
+		const auto catalog = cov::BasicBlockDiscovery{}.Discover(image);
+		cov::RvaSelectionModule selected;
+		selected.name = binary.filename().wstring();
+		selected.identity = image.Identity();
+		selected.catalogSha256 = cov::RvaCatalogSha256(catalog);
+		selected.blocks = catalog;
+		const auto planPath = directory_ / L"roi.json";
+		cov::RvaSelectionPlan plan;
+		plan.modules.push_back(selected);
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		std::string diagnostic;
+		const auto run = [&](const fs::path& output) {
+			return Tools::RunProcess(folder / L"OpenCppCoverage.exe",
+				{L"--rvas", planPath.wstring(), L"--export_type", L"binary:" + output.wstring(),
+					L"--", (folder / L"TestCoverageConsole.exe").wstring(),
+					TestCoverageConsole::TestOptimizedBuild}, &diagnostic, true);
+		};
+		ASSERT_EQ(0, run(path_)) << diagnostic;
+		const auto full = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(1u, full.modules.size());
+		const auto hit = std::find_if(full.modules.front().blocks.begin(), full.modules.front().blocks.end(),
+			[](const cov::RvaBlock& block) { return block.executed; });
+		ASSERT_NE(full.modules.front().blocks.end(), hit);
+		plan.modules.front().blocks = {hit->block};
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		ASSERT_EQ(0, run(path_)) << diagnostic;
+		const auto partial = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(1u, partial.modules.size());
+		ASSERT_EQ(catalog.size(), partial.modules.front().blocks.size());
+		size_t selectedCount = 0;
+		for (const auto& block : partial.modules.front().blocks)
+		{
+			selectedCount += block.selected ? 1 : 0;
+			if (block.block.rva == hit->block.rva)
+			{
+				EXPECT_TRUE(block.selected);
+				EXPECT_TRUE(block.observed);
+				EXPECT_TRUE(block.executed);
+			}
+			else
+			{
+				EXPECT_FALSE(block.selected);
+				EXPECT_FALSE(block.observed);
+				EXPECT_FALSE(block.executed);
+			}
+		}
+		EXPECT_EQ(1u, selectedCount);
+		plan.modules.front().identity.imageHash[0] ^= 1;
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		EXPECT_NE(0, run(directory_ / L"stale.cov"));
+		EXPECT_FALSE(fs::exists(directory_ / L"stale.cov"));
+		plan.modules.front().identity = image.Identity();
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		std::ifstream originalFile(planPath, std::ios::binary);
+		const std::vector<char> original{std::istreambuf_iterator<char>(originalFile), {}};
+		originalFile.close();
+		EXPECT_NE(0, run(planPath));
+		std::ifstream preservedFile(planPath, std::ios::binary);
+		EXPECT_EQ(original, (std::vector<char>{std::istreambuf_iterator<char>(preservedFile), {}}));
+		preservedFile.close();
+		plan.modules.clear();
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		ASSERT_EQ(0, run(path_)) << diagnostic;
+		EXPECT_TRUE(cov::ReadRvaCoverage(path_).modules.empty());
+	}
+
+	TEST_F(RvaCoverageTest, RoiInvestigatorRejectsDiffCoordinatesBeyondSource)
+	{
+		const auto sourcePath = directory_ / L"source.cpp";
+		std::ofstream source(sourcePath, std::ios::binary);
+		source << "first\r\nsecond\r\n";
+		source.close();
+		const auto diffPath = directory_ / L"changes.diff";
+		std::ofstream diff(diffPath, std::ios::binary);
+		diff << "--- source.cpp\r\n+++ source.cpp\r\n@@ -4 +4 @@\r\n-old\r\n+new\r\n";
+		diff.close();
+		const auto output = directory_ / L"invalid.json";
+		EXPECT_THROW(cov::MakeRvaSelectionPlan(diffPath, directory_, {}, cov::Patterns{},
+			{}, 10, output), std::exception);
+		EXPECT_FALSE(fs::exists(output));
+		EXPECT_FALSE(fs::exists(fs::path{output.wstring() + L".explain.json"}));
+	}
+
+	TEST_F(RvaCoverageTest, RoiCollectionWorksWithoutPdbAndResolvesAfterSymbolsAreRestored)
+	{
+		const auto folder = Tools::GetExecutableFolder();
+		const auto runtime = directory_ / L"runtime";
+		ASSERT_TRUE(fs::create_directory(runtime));
+		ASSERT_TRUE(fs::create_directories(runtime / L"Plugins" / L"Exporter"));
+		for (const auto& file : fs::directory_iterator(folder))
+			if (file.is_regular_file() && (file.path().extension() == L".dll" ||
+				file.path().filename() == L"OpenCppCoverage.exe" ||
+				file.path().filename() == L"TestCoverageConsole.exe"))
+				fs::copy_file(file.path(), runtime / file.path().filename());
+		const auto binary = runtime / L"TestCoverageOptimizedBuild.dll";
+		std::ifstream original(binary, std::ios::binary);
+		std::vector<uint8_t> bytes{std::istreambuf_iterator<char>(original), {}};
+		original.close();
+		const cov::PeImage originalImage(binary);
+		std::vector<uint8_t> signature{'R', 'S', 'D', 'S'};
+		signature.insert(signature.end(), originalImage.Identity().pdbGuid.begin(),
+			originalImage.Identity().pdbGuid.end());
+		for (unsigned shift = 0; shift < 32; shift += 8)
+			signature.push_back(static_cast<uint8_t>(originalImage.Identity().pdbAge >> shift));
+		const auto record = std::search(bytes.begin(), bytes.end(), signature.begin(), signature.end());
+		ASSERT_NE(bytes.end(), record);
+		const auto pathStart = record + signature.size();
+		const auto pathEnd = std::find(pathStart, bytes.end(), uint8_t{0});
+		ASSERT_NE(bytes.end(), pathEnd);
+		const std::string pdbName = "TestCoverageOptimizedBuild.pdb";
+		ASSERT_GE(static_cast<size_t>(pathEnd - pathStart), pdbName.size());
+		std::fill(pathStart, pathEnd, uint8_t{0});
+		std::copy(pdbName.begin(), pdbName.end(), pathStart);
+		std::ofstream staged(binary, std::ios::binary | std::ios::trunc);
+		staged.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+		staged.close();
+		const cov::PeImage image(binary);
+		const auto catalog = cov::BasicBlockDiscovery{}.Discover(image);
+		cov::RvaSelectionModule selected;
+		selected.name = binary.filename().wstring();
+		selected.identity = image.Identity();
+		selected.catalogSha256 = cov::RvaCatalogSha256(catalog);
+		selected.blocks = catalog;
+		cov::RvaSelectionPlan plan;
+		plan.modules.push_back(selected);
+		const auto planPath = directory_ / L"no-symbols-roi.json";
+		cov::WriteRvaSelectionPlan(plan, planPath);
+		std::vector<std::pair<std::wstring, std::wstring>> savedPaths;
+		Tools::ScopedAction restorePaths{[&]() {
+			for (const auto& saved : savedPaths)
+				SetEnvironmentVariableW(saved.first.c_str(), saved.second.empty() ? nullptr : saved.second.c_str());
+		}};
+		for (const auto* name : {L"_NT_SYMBOL_PATH", L"_NT_ALT_SYMBOL_PATH"})
+		{
+			const auto length = GetEnvironmentVariableW(name, nullptr, 0);
+			std::wstring saved(length, L'\0');
+			if (length)
+				saved.resize(GetEnvironmentVariableW(name, saved.data(), length));
+			savedPaths.emplace_back(name, std::move(saved));
+			ASSERT_TRUE(SetEnvironmentVariableW(name, runtime.c_str()));
+		}
+		std::string diagnostic;
+		ASSERT_EQ(0, Tools::RunProcess(runtime / L"OpenCppCoverage.exe",
+			{L"--rvas", planPath.wstring(), L"--export_type", L"binary:" + path_.wstring(), L"--",
+				(runtime / L"TestCoverageConsole.exe").wstring(), TestCoverageConsole::TestOptimizedBuild},
+			&diagnostic, true)) << diagnostic;
+		const auto raw = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(1u, raw.modules.size());
+		EXPECT_TRUE(std::any_of(raw.modules.front().blocks.begin(), raw.modules.front().blocks.end(),
+			[](const cov::RvaBlock& block) { return block.executed; }));
+		const auto resolvedPath = directory_ / L"resolved.cov";
+		const std::vector<std::wstring> resolve{
+			L"--resolve", path_.wstring(), L"--module-dir", runtime.wstring(),
+			L"--export_type", L"binary:" + resolvedPath.wstring()};
+		EXPECT_NE(0, Tools::RunProcess(runtime / L"OpenCppCoverage.exe", resolve, &diagnostic, true));
+		fs::copy_file(folder / fs::path{pdbName}, runtime / fs::path{pdbName});
+		EXPECT_EQ(0, Tools::RunProcess(runtime / L"OpenCppCoverage.exe", resolve, &diagnostic, true)) << diagnostic;
+		EXPECT_TRUE(fs::is_regular_file(resolvedPath));
+	}
+
+	TEST_F(RvaCoverageTest, RoiInvestigatorCompilesSourceDeltaForNativeCollection)
+	{
+		const auto folder = Tools::GetExecutableFolder();
+		const auto binary = folder / L"TestCoverageOptimizedBuild.dll";
+		std::string diagnostic;
+		ASSERT_EQ(0, Tools::RunProcess(folder / L"OpenCppCoverage.exe",
+			{L"--symbol-free", L"--modules", binary.wstring(),
+				L"--export_type", L"binary:" + path_.wstring(), L"--",
+				(folder / L"TestCoverageConsole.exe").wstring(), TestCoverageConsole::TestOptimizedBuild},
+			&diagnostic, true)) << diagnostic;
+		const auto full = cov::ReadRvaCoverage(path_);
+		const auto resolved = cov::RvaCoverageResolver{}.Resolve(full, {}, {});
+		unsigned changedLine = 0;
+		fs::path sourcePath;
+		for (const auto& module : resolved.GetModules())
+			for (const auto& file : module->GetFiles())
+				if (file->GetPath().filename() == L"TestCoverageOptimizedBuild.cpp")
+					for (const auto& line : file->GetLines())
+						if (line.HasBeenExecuted())
+						{
+							changedLine = line.GetLineNumber();
+							sourcePath = file->GetPath();
+							break;
+						}
+		ASSERT_NE(0u, changedLine);
+		std::ifstream source(sourcePath);
+		std::string text;
+		for (unsigned line = 0; line < changedLine; ++line)
+			ASSERT_TRUE(static_cast<bool>(std::getline(source, text)));
+		if (!text.empty() && text.back() == '\r')
+			text.pop_back();
+		const auto diffPath = directory_ / L"change.diff";
+		std::ofstream diff(diffPath, std::ios::binary);
+		diff << "diff --git a/TestCoverageOptimizedBuild/TestCoverageOptimizedBuild.cpp "
+			"b/TestCoverageOptimizedBuild/TestCoverageOptimizedBuild.cpp\r\n"
+			"--- a/TestCoverageOptimizedBuild/TestCoverageOptimizedBuild.cpp\r\n"
+			"+++ b/TestCoverageOptimizedBuild/TestCoverageOptimizedBuild.cpp\r\n"
+			"@@ -" << changedLine << " +" << changedLine << " @@\r\n"
+			"-previous source line\r\n+" << text << "\r\n";
+		diff.close();
+		const auto planPath = directory_ / L"generated-roi.json";
+		ASSERT_EQ(0, Tools::RunProcess(folder / L"OpenCppCoverage.exe",
+			{L"--make-rvas", planPath.wstring(), L"--diff", diffPath.wstring(),
+				L"--source-root", sourcePath.parent_path().parent_path().wstring(), L"--module-dir", folder.wstring(),
+				L"--modules", binary.wstring(), L"--expand-lines", L"0"},
+			&diagnostic, true)) << diagnostic;
+		const auto plan = cov::ReadRvaSelectionPlan(planPath);
+		ASSERT_EQ(1u, plan.modules.size());
+		ASSERT_FALSE(plan.modules.front().blocks.empty());
+		EXPECT_TRUE(fs::is_regular_file(fs::path{planPath.wstring() + L".explain.json"}));
+		ASSERT_EQ(0, Tools::RunProcess(folder / L"OpenCppCoverage.exe",
+			{L"--rvas", planPath.wstring(), L"--export_type", L"binary:" + path_.wstring(),
+				L"--", (folder / L"TestCoverageConsole.exe").wstring(), TestCoverageConsole::TestOptimizedBuild},
+			&diagnostic, true)) << diagnostic;
+		const auto partial = cov::ReadRvaCoverage(path_);
+		ASSERT_EQ(1u, partial.modules.size());
+		std::set<uint32_t> selectedRvas;
+		for (const auto& block : plan.modules.front().blocks)
+			selectedRvas.insert(block.rva);
+		for (const auto& block : partial.modules.front().blocks)
+		{
+			EXPECT_EQ(selectedRvas.count(block.block.rva) != 0, block.selected);
+			if (!block.selected)
+			{
+				EXPECT_FALSE(block.observed);
+				EXPECT_FALSE(block.executed);
+			}
+		}
+		const auto sourceCoverage = cov::RvaCoverageResolver{}.Resolve(partial, {}, {});
+		bool changedLineCovered = false;
+		for (const auto& module : sourceCoverage.GetModules())
+			for (const auto& file : module->GetFiles())
+				if (file->GetPath() == sourcePath)
+					for (const auto& line : file->GetLines())
+						if (line.GetLineNumber() == changedLine)
+							changedLineCovered = line.HasBeenExecuted();
+		EXPECT_TRUE(changedLineCovered);
 	}
 
 	TEST_F(RvaCoverageTest, NativeMatchingPdbProducesConditionalChainWithoutChangingMeasuredExports)

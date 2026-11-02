@@ -70,6 +70,11 @@ namespace CppCoverage
 		                          const std::vector<Line>&) = 0;
 		virtual void OnFunction(const Function&) {}
 		virtual void OnPdbFile(const std::filesystem::path&) {}
+		virtual bool WantsSourceProvenance() const { return false; }
+		virtual void OnSourceChecksum(const std::filesystem::path&,
+			uint32_t, const std::vector<uint8_t>&) {}
+		virtual void OnMappingDiagnostic(const std::filesystem::path&,
+			const std::string&) {}
 	};
 
 	//-------------------------------------------------------------------------

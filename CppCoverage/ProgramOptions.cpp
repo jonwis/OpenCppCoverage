@@ -67,7 +67,13 @@ namespace CppCoverage
 				(ProgramOptions::WatchProcessesOption.c_str(), "Also attach matching future process launches during existing-process collection. ETW API access failures report when elevation is needed.")
 				(ProgramOptions::ResolveOption.c_str(), po::value<std::string>(), "Resolve a symbol-free .cov file using matching images and PDBs.")
 				(ProgramOptions::CfgReportOption.c_str(), po::value<std::string>(), "Write a conditional normal-flow CFG implication report during --resolve. Does not change measured exports.")
-				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Search directory for matching images during --resolve. Can have multiple occurrences.")
+				(ProgramOptions::ModuleDirectoryOption.c_str(), po::value<T_Strings>()->composing(), "Image directory for --resolve or --make-rvas. Can have multiple occurrences.")
+				(ProgramOptions::ModuleDirectoryAliasOption.c_str(), po::value<T_Strings>()->composing(), "Alias for --module_dir.")
+				(ProgramOptions::RvasOption.c_str(), po::value<std::string>(), "Collect only the image-bound block selection in this ROI JSON file. Implies --symbol-free.")
+				(ProgramOptions::MakeRvasOption.c_str(), po::value<std::string>(), "Compile --diff source regions into an ROI JSON selection using matching images and PDBs.")
+				(ProgramOptions::DiffOption.c_str(), po::value<std::string>(), "Unified diff for --make-rvas, in the built source revision's line coordinates.")
+				(ProgramOptions::SourceRootOption.c_str(), po::value<std::string>(), "Built source checkout for --make-rvas.")
+				(ProgramOptions::ExpandLinesOption.c_str(), po::value<int>(), "Expand changed regions by this many source lines on each side before mapping to blocks. Default 10; requires --make-rvas.")
 				(ProgramOptions::SelectedProcessesOption.c_str(),
 				po::value<T_Strings>()->default_value({ all }, all)->composing(),
 				"Main executable glob for symbol-free coverage. Basename unless the glob contains '\\'. Explicit selectors are required without a launched program; launch descendants require --cover_children. Can have multiple occurrences.")
@@ -150,6 +156,12 @@ namespace CppCoverage
 	const std::string ProgramOptions::ResolveOption = "resolve";
 	const std::string ProgramOptions::CfgReportOption = "cfg-report";
 	const std::string ProgramOptions::ModuleDirectoryOption = "module_dir";
+	const std::string ProgramOptions::ModuleDirectoryAliasOption = "module-dir";
+	const std::string ProgramOptions::RvasOption = "rvas";
+	const std::string ProgramOptions::MakeRvasOption = "make-rvas";
+	const std::string ProgramOptions::DiffOption = "diff";
+	const std::string ProgramOptions::SourceRootOption = "source-root";
+	const std::string ProgramOptions::ExpandLinesOption = "expand-lines";
     const std::string ProgramOptions::StopOnAssertOption = "stop_on_assert";
 
 	//-------------------------------------------------------------------------

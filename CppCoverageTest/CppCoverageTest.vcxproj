@@ -314,6 +314,7 @@
     <ClCompile Include="ArchitectureBreakpointTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaCoverageTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="RvaOptionsTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
+    <ClCompile Include="RvaSelectionPlanTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
     <ClCompile Include="ProcessWatcherTest.cpp"><PrecompiledHeader>NotUsing</PrecompiledHeader></ClCompile>
   </ItemGroup>
   <ImportGroup Label="ExtensionTargets">

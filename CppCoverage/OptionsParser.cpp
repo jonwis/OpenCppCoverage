@@ -455,11 +455,42 @@ namespace CppCoverage
 
 		if (variablesMap.IsOptionSelected(ProgramOptions::SymbolFreeOption))
 			options.EnableSymbolFreeMode();
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::RvasOption))
+		{
+			if (!fs::is_regular_file(*path))
+				throw Plugin::OptionsParserException("--rvas requires an existing ROI selection file.");
+			options.SetRvasPath(*path);
+			options.EnableSymbolFreeMode();
+		}
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::MakeRvasOption))
+		{
+			if (path->empty() || fs::is_directory(*path))
+				throw Plugin::OptionsParserException("--make-rvas requires a nonempty output file path.");
+			options.SetMakeRvasPath(*path);
+		}
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::DiffOption))
+		{
+			if (!fs::is_regular_file(*path))
+				throw Plugin::OptionsParserException("--diff requires an existing unified diff file.");
+			options.SetDiffPath(*path);
+		}
+		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::SourceRootOption))
+		{
+			if (!fs::is_directory(*path))
+				throw Plugin::OptionsParserException("--source-root requires an existing source checkout directory.");
+			options.SetSourceRoot(*path);
+		}
+		if (const auto* lines = variablesMap.GetOptionalValue<int>(ProgramOptions::ExpandLinesOption))
+		{
+			if (*lines < 0)
+				throw Plugin::OptionsParserException("--expand-lines must be a nonnegative integer.");
+			options.SetExpandLines(static_cast<unsigned>(*lines));
+		}
 		if (const auto* percent = variablesMap.GetOptionalValue<int>(ProgramOptions::SamplePercentOption))
 		{
-			if (!options.IsSymbolFreeModeEnabled() || *percent < 1 || *percent > 100)
+			if (!options.IsSymbolFreeModeEnabled() || options.GetRvasPath() || *percent < 1 || *percent > 100)
 				throw Plugin::OptionsParserException(
-				    "--sample-percent requires --symbol-free collection and an integer from 1 to 100.");
+				    "--sample-percent requires --symbol-free collection, an integer from 1 to 100, and no --rvas.");
 			options.SetSamplePercent(static_cast<unsigned>(*percent));
 		}
 		if (variablesMap.IsOptionSelected(ProgramOptions::WatchProcessesOption))
@@ -492,15 +523,16 @@ namespace CppCoverage
 				throw Plugin::OptionsParserException("--resolve requires an existing RVA coverage file.");
 			options.SetResolvePath(*path);
 		}
-		if (const auto* directories = variablesMap.GetOptionalValue<std::vector<std::string>>(ProgramOptions::ModuleDirectoryOption))
-		{
-			for (const auto& directory : *directories)
+		for (const auto& option : {ProgramOptions::ModuleDirectoryOption, ProgramOptions::ModuleDirectoryAliasOption})
+			if (const auto* directories = variablesMap.GetOptionalValue<std::vector<std::string>>(option))
 			{
-				if (!fs::is_directory(directory))
-					throw Plugin::OptionsParserException("--module_dir requires an existing directory.");
-				options.AddModuleDirectory(directory);
+				for (const auto& directory : *directories)
+				{
+					if (!fs::is_directory(directory))
+						throw Plugin::OptionsParserException("--module-dir requires an existing directory.");
+					options.AddModuleDirectory(directory);
+				}
 			}
-		}
 		if (const auto* path = variablesMap.GetOptionalValue<std::string>(ProgramOptions::CfgReportOption))
 		{
 			if (!options.GetResolvePath() || path->empty())
@@ -514,6 +546,22 @@ namespace CppCoverage
 		if (options.IsSymbolFreeModeEnabled() &&
 			(options.GetResolvePath() || !options.GetInputCoveragePaths().empty()))
 			throw Plugin::OptionsParserException("--symbol-free cannot be combined with --resolve or --input_coverage.");
+		const bool makingRvas = options.GetMakeRvasPath().has_value();
+		if (makingRvas)
+		{
+			if (!options.GetDiffPath() || !options.GetSourceRoot() || options.GetModuleDirectories().empty())
+				throw Plugin::OptionsParserException("--make-rvas requires --diff, --source-root and --module-dir.");
+			if (options.GetStartInfo() || options.GetResolvePath() || options.IsSymbolFreeModeEnabled() ||
+				!options.GetInputCoveragePaths().empty() || options.GetDuration() || options.IsProcessWatchEnabled() ||
+				options.IsCoverChildrenModeEnabled() || options.IsStopOnAssertModeEnabled() ||
+				options.IsContinueAfterCppExceptionModeEnabled() || options.IsPlugingModeEnabled() ||
+				options.IsOptimizedBuildSupportEnabled() || !variablesMap.GetVariablesMap().at("export_type").defaulted() ||
+				variablesMap.IsOptionSelected(ProgramOptions::WorkingDirectoryOption))
+				throw Plugin::OptionsParserException("--make-rvas is a standalone investigator mode, not a collection, resolve or export mode.");
+		}
+		else if (options.GetDiffPath() || options.GetSourceRoot() ||
+			variablesMap.IsOptionSelected(ProgramOptions::ExpandLinesOption))
+			throw Plugin::OptionsParserException("--diff, --source-root and --expand-lines require --make-rvas.");
 		const bool external = options.IsSymbolFreeModeEnabled() && !options.GetStartInfo();
 		if (options.IsProcessWatchEnabled() && !external)
 			throw Plugin::OptionsParserException(
@@ -522,7 +570,7 @@ namespace CppCoverage
 		{
 			const auto& values = variablesMap.GetVariablesMap();
 			if (values.at(ProgramOptions::SelectedProcessesOption).defaulted() ||
-			    values.at(ProgramOptions::SelectedModulesOption).defaulted() || !options.GetDuration())
+			    (values.at(ProgramOptions::SelectedModulesOption).defaulted() && !options.GetRvasPath()) || !options.GetDuration())
 				throw Plugin::OptionsParserException(
 				    "Existing-process collection requires explicit --processes, --modules and a positive --duration.");
 			if (options.IsCoverChildrenModeEnabled() || options.IsStopOnAssertModeEnabled() ||
@@ -535,9 +583,9 @@ namespace CppCoverage
 			throw Plugin::OptionsParserException("--duration applies only to existing-process collection without a launched program.");
 		if (options.GetResolvePath() && (options.GetStartInfo() || !options.GetInputCoveragePaths().empty()))
 			throw Plugin::OptionsParserException("--resolve cannot be combined with a program or --input_coverage.");
-		if (!options.GetModuleDirectories().empty() && !options.GetResolvePath())
-			throw Plugin::OptionsParserException("--module_dir requires --resolve.");
-		if (options.IsSymbolFreeModeEnabled())
+		if (!options.GetModuleDirectories().empty() && !options.GetResolvePath() && !makingRvas)
+			throw Plugin::OptionsParserException("--module-dir requires --resolve or --make-rvas.");
+		if (options.IsSymbolFreeModeEnabled() || makingRvas)
 		{
 			const auto& values = variablesMap.GetVariablesMap();
 			if (!values.at(ProgramOptions::SelectedSourcesOption).defaulted() ||
@@ -550,7 +598,7 @@ namespace CppCoverage
 		if (options.GetResolvePath() && options.IsOptimizedBuildSupportEnabled())
 			throw Plugin::OptionsParserException("--optimized_build applies to symbol-based collection.");
 
-		if (!external && !options.GetStartInfo() && options.GetInputCoveragePaths().empty() && !options.GetResolvePath())
+		if (!external && !makingRvas && !options.GetStartInfo() && options.GetInputCoveragePaths().empty() && !options.GetResolvePath())
 			throw Plugin::OptionsParserException(
 			    "You must specify a program to execute or use --" +
 			    ProgramOptions::InputCoverageValue);

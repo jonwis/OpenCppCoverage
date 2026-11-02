@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "RvaCoverageRunner.hpp"
+#include "RvaSelectionPlan.hpp"
 
 #include <Windows.h>
 #include <wil/result.h>
@@ -334,6 +335,7 @@ namespace CppCoverage
 		RvaCoverage coverage;
 		RvaCoverageSampling sampling;
 		unsigned samplePercent = 100;
+		std::optional<RvaSelectionPlan> selection;
 		std::unique_ptr<CoverageFilterManager> filter;
 		std::unique_ptr<ProcessFilter> processFilter;
 		ExceptionHandler exceptions;
@@ -341,6 +343,30 @@ namespace CppCoverage
 		std::vector<Aggregate> aggregates;
 		size_t hitEpoch = 0;
 		bool external = false;
+
+		void ReportSelection() const
+		{
+			if (!selection)
+				return;
+			for (const auto& planned : selection->modules)
+			{
+				const auto module = std::find_if(coverage.modules.begin(), coverage.modules.end(),
+					[&](const RvaModule& value) { return SameIdentity(value.identity, planned.identity); });
+				size_t observed = 0, hits = 0;
+				if (module != coverage.modules.end())
+					for (const auto& block : module->blocks)
+					{
+						observed += block.observed ? 1 : 0;
+						hits += block.executed ? 1 : 0;
+					}
+				LOG_INFO << L"ROI module " << planned.name << L" selected=" << planned.blocks.size()
+					<< L" observed=" << observed << L" hit=" << hits
+					<< (module == coverage.modules.end() ?
+						L" (unobserved: not loaded or excluded by process/module filters)" : L"");
+			}
+			if (selection->modules.empty())
+				LOG_INFO << "ROI selection is empty; no coverage probes were requested";
+		}
 
 		void RecordHit(size_t aggregate, size_t index)
 		{
@@ -399,13 +425,51 @@ namespace CppCoverage
 			blocks[indices[i]].selected = true;
 	}
 
+	void RvaCoverageSampling::Select(std::vector<RvaBlock>& blocks, const RvaSelectionModule& selection)
+	{
+		std::vector<BasicBlock> catalog;
+		catalog.reserve(blocks.size());
+		for (const auto& block : blocks)
+			catalog.push_back(block.block);
+		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+			RvaCatalogSha256(catalog) != selection.catalogSha256,
+			"The ROI catalog does not match the discovered module layout");
+		std::vector<size_t> indices;
+		indices.reserve(selection.blocks.size());
+		uint32_t previous = 0;
+		bool first = true;
+		for (const auto& selected : selection.blocks)
+		{
+			const auto found = std::lower_bound(blocks.begin(), blocks.end(), selected.rva,
+				[](const RvaBlock& block, uint32_t rva) { return block.block.rva < rva; });
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA),
+				(!first && selected.rva <= previous) || found == blocks.end() ||
+				!SameBlock(found->block, selected), "An ROI entry is not a unique discovered block");
+			previous = selected.rva;
+			first = false;
+			indices.push_back(static_cast<size_t>(found - blocks.begin()));
+		}
+		for (auto& block : blocks)
+		{
+			block.selected = false;
+			block.observed = false;
+			block.executed = false;
+		}
+		for (const auto index : indices)
+			blocks[index].selected = true;
+	}
+
 	RvaCoverage RvaCoverageRunner::CollectExisting(
 	    const CoverageFilterSettings& filters, const Patterns& processes, unsigned durationSeconds,
-	    bool watchProcesses, unsigned samplePercent)
+	    bool watchProcesses, unsigned samplePercent, const std::filesystem::path& rvasPath)
 	{
 		THROW_HR_IF_MSG(E_INVALIDARG, samplePercent < 1 || samplePercent > 100, "Invalid sample percentage");
+		THROW_HR_IF_MSG(E_INVALIDARG, !rvasPath.empty() && samplePercent != 100,
+			"ROI selection cannot be combined with random sampling");
 		state_ = std::make_unique<State>();
 		state_->samplePercent = samplePercent;
+		if (!rvasPath.empty())
+			state_->selection = ReadRvaSelectionPlan(rvasPath);
 		state_->external = true;
 		state_->processFilter = std::make_unique<ProcessFilter>(processes);
 		state_->filter = std::make_unique<CoverageFilterManager>(
@@ -413,6 +477,7 @@ namespace CppCoverage
 		state_->coverage.name = watchProcesses ? L"Watched processes" : L"Existing processes";
 		Debugger debugger{false, false, false};
 		state_->coverage.exitCode = debugger.AttachExisting(processes, durationSeconds, *this, watchProcesses);
+		state_->ReportSelection();
 		return std::move(state_->coverage);
 	}
 
@@ -422,6 +487,10 @@ namespace CppCoverage
 		    settings.GetSamplePercent() > 100, "Invalid sample percentage");
 		state_ = std::make_unique<State>();
 		state_->samplePercent = settings.GetSamplePercent();
+		THROW_HR_IF_MSG(E_INVALIDARG, settings.GetRvasPath() && settings.GetSamplePercent() != 100,
+			"ROI selection cannot be combined with random sampling");
+		if (settings.GetRvasPath())
+			state_->selection = ReadRvaSelectionPlan(*settings.GetRvasPath());
 		if (settings.GetProcessPatterns())
 			state_->processFilter = std::make_unique<ProcessFilter>(*settings.GetProcessPatterns());
 		state_->filter = std::make_unique<CoverageFilterManager>(
@@ -439,6 +508,7 @@ namespace CppCoverage
 			state_->Terminate();
 			throw;
 		}
+		state_->ReportSelection();
 		return std::move(state_->coverage);
 	}
 
@@ -538,10 +608,29 @@ namespace CppCoverage
 		    HandleInformation{}.ComputeMappedFilename(process, baseAddress)};
 		const auto base = reinterpret_cast<uint64_t>(baseAddress);
 		const bool loader = _wcsicmp(path.filename().c_str(), L"ntdll.dll") == 0;
-		const bool selected = live.selected && state_->filter->IsModuleSelected(path.wstring());
+		bool selected = live.selected && state_->filter->IsModuleSelected(path.wstring());
 		if (!loader && !selected)
 			return;
 		const auto remote = ReadImage(process, base);
+		bool namedSelection = false;
+		if (selected && state_->selection)
+		{
+			bool candidate = false;
+			for (const auto& planned : state_->selection->modules)
+			{
+				const auto& expected = planned.identity;
+				namedSelection = namedSelection ||
+					CompareStringOrdinal(planned.name.c_str(), -1,
+						path.filename().c_str(), -1, TRUE) == CSTR_EQUAL;
+				candidate = candidate || (expected.machine == remote.file.Machine &&
+					expected.timeDateStamp == remote.file.TimeDateStamp &&
+					expected.sizeOfImage == remote.optional.SizeOfImage &&
+					expected.checksum == remote.optional.CheckSum);
+			}
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), namedSelection && !candidate,
+				"A loaded module has the ROI name but a different PE identity: %ls", path.c_str());
+			selected = candidate;
+		}
 		if (loader)
 			live.loaders.emplace(base, State::Process::Loader{
 			    remote.optional.SizeOfImage, LoaderBreakpoints(process, remote)});
@@ -551,6 +640,14 @@ namespace CppCoverage
 		const PhaseClock started;
 		PeImage image{path};
 		const auto& identity = image.Identity();
+		const RvaSelectionModule* selection = state_->selection ?
+			FindRvaSelection(*state_->selection, identity) : nullptr;
+		if (state_->selection && !selection)
+		{
+			THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), namedSelection,
+				"A loaded module does not match the ROI image hash: %ls", path.c_str());
+			return;
+		}
 		THROW_HR_IF_MSG(HRESULT_FROM_WIN32(ERROR_INVALID_DATA), remote.file.Machine != identity.machine ||
 		    remote.file.TimeDateStamp != identity.timeDateStamp ||
 		    remote.optional.SizeOfImage != identity.sizeOfImage ||
@@ -589,7 +686,10 @@ namespace CppCoverage
 				module.blocks.reserve(discoveredBlocks.size());
 				for (const auto& block : discoveredBlocks)
 					module.blocks.push_back({block, false, true, false});
-				state_->sampling.Select(module.blocks, state_->samplePercent);
+				if (selection)
+					state_->sampling.Select(module.blocks, *selection);
+				else
+					state_->sampling.Select(module.blocks, state_->samplePercent);
 				modules.push_back(std::move(module));
 				state_->aggregates.emplace_back();
 			}

@@ -23,6 +23,7 @@
 #include <wrl/client.h>
 
 #include <filesystem>
+#include <set>
 #include <boost/algorithm/string.hpp>
 
 #include "tools/Log.hpp"
@@ -117,6 +118,14 @@ namespace CppCoverage
 			});
 
 			return sourceFiles;
+		}
+
+		std::wstring CanonicalSourcePath(const std::filesystem::path& path)
+		{
+			auto name = std::filesystem::weakly_canonical(std::filesystem::absolute(path))
+				.lexically_normal().wstring();
+			boost::algorithm::to_lower(name);
+			return name;
 		}
 
 		//----------------------------------------------------------------------
@@ -341,7 +350,38 @@ namespace CppCoverage
 		if (sourceFile.get_compilands(&symbols) != S_OK || !symbols)
 			THROW("DIA: Cannot get compilands");
 
+		bool checksumReported = false;
 		EnumerateCollection<IDiaSymbol>(*symbols.Get(), [&](IDiaSymbol& symbol) {
+			if (handler.WantsSourceProvenance())
+			{
+				DiaString pdbFilename;
+				if (sourceFile.get_fileName(&pdbFilename) != S_OK)
+					THROW("DIA: Cannot get source filename for checksum lookup");
+				const std::wstring name = pdbFilename;
+				ComPtr<IDiaEnumSourceFiles> matchingFiles;
+				bool compilandChecksumReported = false;
+				// Source-table records carry paths; compiland-bound records carry checksums.
+				if (session.findFile(&symbol, name.c_str(), nsNone, &matchingFiles) == S_OK && matchingFiles)
+					EnumerateCollection<IDiaSourceFile>(*matchingFiles.Get(), [&](IDiaSourceFile& matchingFile) {
+						DWORD kind = 0, size = 0;
+						std::vector<uint8_t> checksum;
+						if (matchingFile.get_checksumType(&kind) == S_OK && kind != 0 &&
+							SUCCEEDED(matchingFile.get_checksum(0, &size, nullptr)) &&
+							size != 0 && size <= 64)
+						{
+							checksum.resize(size);
+							DWORD written = 0;
+							if (matchingFile.get_checksum(size, &written, checksum.data()) != S_OK ||
+								written != size)
+								checksum.clear();
+						}
+						handler.OnSourceChecksum(GetSourceFileName(sourceFile), kind, checksum);
+						compilandChecksumReported = true;
+					});
+				if (!compilandChecksumReported)
+					handler.OnSourceChecksum(GetSourceFileName(sourceFile), 0, {});
+				checksumReported = true;
+			}
 			ComPtr<IDiaEnumLineNumbers> lines;
 
 			if (session.findLines(&symbol, &sourceFile, &lines) != S_OK ||
@@ -354,7 +394,67 @@ namespace CppCoverage
 			    *lines.Get(), [&](IDiaLineNumber& lineNumber) {
 				    OnNewLine(session, lineNumber, handler);
 			    });
+			if (handler.WantsSourceProvenance())
+			{
+				const auto sourcePath = GetSourceFileName(sourceFile);
+				const auto sourceKey = CanonicalSourcePath(sourcePath);
+				ComPtr<IDiaEnumSymbols> functions;
+				if (symbol.findChildren(SymTagFunction, nullptr, nsNone, &functions) != S_OK || !functions)
+				{
+					handler.OnMappingDiagnostic(GetSourceFileName(sourceFile),
+						"inline-line-enumeration-unavailable");
+					return;
+				}
+				std::vector<ComPtr<IDiaSymbol>> scopes;
+				EnumerateCollection<IDiaSymbol>(*functions.Get(), [&](IDiaSymbol& function) {
+					scopes.emplace_back(&function);
+				});
+				std::set<DWORD> visited;
+				while (!scopes.empty())
+				{
+					auto scope = std::move(scopes.back());
+					scopes.pop_back();
+					DWORD id = 0;
+					if (scope->get_symIndexId(&id) != S_OK)
+						THROW("DIA: Cannot get inline scope identity");
+					if (!visited.insert(id).second)
+						continue;
+					if (visited.size() > 4000000)
+						THROW("DIA: Inline scope limit exceeded");
+					for (const auto tag : {SymTagInlineSite, SymTagBlock})
+					{
+						ComPtr<IDiaEnumSymbols> children;
+						const auto result = scope->findChildren(tag, nullptr, nsNone, &children);
+						if (FAILED(result))
+							handler.OnMappingDiagnostic(sourcePath, "inline-scope-enumeration-unavailable");
+						else if (children)
+							EnumerateCollection<IDiaSymbol>(*children.Get(), [&](IDiaSymbol& child) {
+								scopes.emplace_back(&child);
+								if (tag != SymTagInlineSite)
+									return;
+								ComPtr<IDiaEnumLineNumbers> inlineLines;
+								if (session.findInlineeLines(&child, &inlineLines) != S_OK || !inlineLines)
+								{
+									handler.OnMappingDiagnostic(sourcePath, "inline-line-enumeration-unavailable");
+									return;
+								}
+								EnumerateCollection<IDiaLineNumber>(*inlineLines.Get(), [&](IDiaLineNumber& line) {
+									ComPtr<IDiaSourceFile> inlineSource;
+									if (line.get_sourceFile(&inlineSource) != S_OK || !inlineSource)
+									{
+										handler.OnMappingDiagnostic(sourcePath, "inline-source-file-unavailable");
+										return;
+									}
+									if (CanonicalSourcePath(GetSourceFileName(*inlineSource.Get())) == sourceKey)
+										OnNewLine(session, line, handler);
+								});
+							});
+					}
+				}
+			}
 		});
+		if (handler.WantsSourceProvenance() && !checksumReported)
+			handler.OnSourceChecksum(GetSourceFileName(sourceFile), 0, {});
 	}
 
 	//----------------------------------------------------------------------

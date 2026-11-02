@@ -20,6 +20,7 @@
 #include <sstream>
 #include <regex>
 #include <filesystem>
+#include <limits>
 #include <boost/algorithm/string.hpp>
 
 #include "File.hpp"
@@ -33,6 +34,76 @@ namespace FileFilter
 	{
 		const std::wstring GitTargetPrefix = L"b/";
 		const std::wstring DevNull = L"/dev/null";
+
+		std::wstring DecodeGitPath(const std::wstring& path)
+		{
+			if (path.empty() || path.front() != L'"')
+				return path;
+			if (path.size() < 2 || path.back() != L'"')
+				throw std::runtime_error("Unterminated quoted Git path");
+			if (path.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
+				throw std::runtime_error("Git path too long");
+			const auto encodedSize = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+				path.data(), static_cast<int>(path.size()), nullptr, 0, nullptr, nullptr);
+			if (!encodedSize)
+				throw std::runtime_error("Invalid UTF-16 Git path");
+			std::string encoded(encodedSize, '\0');
+			if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path.data(),
+				static_cast<int>(path.size()), &encoded[0], encodedSize, nullptr, nullptr) != encodedSize)
+				throw std::runtime_error("Invalid UTF-16 Git path");
+			std::string bytes;
+			for (size_t i = 1; i + 1 < encoded.size(); ++i)
+			{
+				auto c = encoded[i];
+				if (c != '\\')
+				{
+					if (c == '"')
+						throw std::runtime_error("Invalid quoted Git path");
+					bytes += c;
+					continue;
+				}
+				if (++i + 1 >= encoded.size())
+					throw std::runtime_error("Invalid Git path escape");
+				c = encoded[i];
+				if (c >= '0' && c <= '7')
+				{
+					if (i + 3 >= encoded.size() || encoded[i + 1] < '0' || encoded[i + 1] > '7' ||
+						encoded[i + 2] < '0' || encoded[i + 2] > '7')
+						throw std::runtime_error("Invalid Git octal path escape");
+					const auto value = (c - '0') * 64 + (encoded[i + 1] - '0') * 8 + encoded[i + 2] - '0';
+					if (value > 255 || value == 0)
+						throw std::runtime_error("Invalid Git path byte");
+					bytes.push_back(static_cast<char>(value));
+					i += 2;
+				}
+				else
+				{
+					switch (c)
+					{
+					case '\\': case '"': bytes.push_back(c); break;
+					case 't': bytes.push_back('\t'); break;
+					case 'n': bytes.push_back('\n'); break;
+					case 'r': bytes.push_back('\r'); break;
+					case 'a': bytes.push_back('\a'); break;
+					case 'b': bytes.push_back('\b'); break;
+					case 'f': bytes.push_back('\f'); break;
+					case 'v': bytes.push_back('\v'); break;
+					default: throw std::runtime_error("Unknown Git path escape");
+					}
+				}
+			}
+			if (bytes.empty())
+				return {};
+			const auto size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+				bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+			if (!size)
+				throw std::runtime_error("Invalid UTF-8 Git path");
+			std::wstring result(size, L'\0');
+			if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(),
+				static_cast<int>(bytes.size()), &result[0], size) != size)
+				throw std::runtime_error("Invalid UTF-8 Git path");
+			return result;
+		}
 
 		//-----------------------------------------------------------------------
 		bool IsGitDetected(
@@ -142,6 +213,11 @@ namespace FileFilter
 	//-------------------------------------------------------------------------
 	std::vector<File> UnifiedDiffParser::Parse(std::wistream& istr) const
 	{
+		return Parse(istr, Mode::AddedLines);
+	}
+
+	std::vector<File> UnifiedDiffParser::Parse(std::wistream& istr, Mode mode) const
+	{
 		std::wstring line;
 		std::vector<File> files;
 		Stream stream(istr);
@@ -150,15 +226,22 @@ namespace FileFilter
 
 		while (stream.GetLine(line))
 		{
+			if (!line.empty() && line.back() == L'\r')
+				line.pop_back();
+			if (!line.empty() && line.front() == 0xfeff)
+				line.erase(line.begin());
 			if (boost::algorithm::starts_with(line, L"diff --git"))
 				foundGitHeader = true;
 			else if (boost::algorithm::starts_with(line, FromFilePrefix))
 			{
-				sourceFileLines.push_back(line);
+				const auto end = line.find(L'\t', FromFilePrefix.size());
+				sourceFileLines.push_back(FromFilePrefix +
+					DecodeGitPath(line.substr(FromFilePrefix.size(), end == std::wstring::npos ?
+						end : end - FromFilePrefix.size())));
 				files.emplace_back(ExtractTargetFile(stream));
 			}
 			else if (boost::algorithm::starts_with(line, L"@@"))
-				FillUpdatedLines(line, files, stream);
+				FillUpdatedLines(line, files, stream, mode);
 		}
 		RemoveDevNull(files, sourceFileLines);
 		UpdateFilePathIfGitDetected(files, sourceFileLines, foundGitHeader);
@@ -170,11 +253,11 @@ namespace FileFilter
 	void UnifiedDiffParser::FillUpdatedLines(
 		const std::wstring& line,
 		std::vector<File>& files,
-		Stream& stream) const
+		Stream& stream, Mode mode) const
 	{
 		if (files.empty())
 			ThrowError(stream, UnifiedDiffParserException::ErrorNoFilenameBeforeHunks);
-		auto updatedLines = ExtractUpdatedLines(stream, line);
+		auto updatedLines = ExtractUpdatedLines(stream, line, mode);
 		files.back().AddSelectedLines(updatedLines);
 	}
 
@@ -184,6 +267,8 @@ namespace FileFilter
 		std::wstring line;		
 		if (!stream.GetLine(line))
 			ThrowError(stream, UnifiedDiffParserException::ErrorCannotReadLine);
+		if (!line.empty() && line.back() == L'\r')
+			line.pop_back();
 		
 		if (!boost::algorithm::starts_with(line, ToFilePrefix))
 			ThrowError(stream, UnifiedDiffParserException::ErrorExpectFromFilePrefix);
@@ -192,8 +277,8 @@ namespace FileFilter
 		const auto endIndex = line.find('\t');
 		
 		if (endIndex != std::string::npos)
-			return line.substr(startIndex, endIndex - startIndex);
-		return line.substr(startIndex);
+			return DecodeGitPath(line.substr(startIndex, endIndex - startIndex));
+		return DecodeGitPath(line.substr(startIndex));
 	}
 
 	//-------------------------------------------------------------------------
@@ -210,11 +295,23 @@ namespace FileFilter
 		{
 			if (match.size() == 5 && match[1].matched && match[3].matched)
 			{
-				HunksDifferences hunksDifferences;
-				hunksDifferences.startFrom = std::stoi(match[1]);
-				hunksDifferences.countFrom = match[2].matched ? std::stoi(match[2]) : 1;
-				hunksDifferences.startTo = std::stoi(match[3]);
-				hunksDifferences.countTo = match[4].matched ? std::stoi(match[4]) : 1;
+				HunksDifferences hunksDifferences{};
+				try
+				{
+					hunksDifferences.startFrom = std::stoi(match[1]);
+					hunksDifferences.countFrom = match[2].matched ? std::stoi(match[2]) : 1;
+					hunksDifferences.startTo = std::stoi(match[3]);
+					hunksDifferences.countTo = match[4].matched ? std::stoi(match[4]) : 1;
+				}
+				catch (const std::exception&)
+				{
+					ThrowError(stream, UnifiedDiffParserException::ErrorInvalidHunks);
+				}
+				if ((hunksDifferences.startFrom == 0 && hunksDifferences.countFrom != 0) ||
+					(hunksDifferences.startTo == 0 && hunksDifferences.countTo != 0) ||
+					int64_t{hunksDifferences.startFrom} + hunksDifferences.countFrom > (std::numeric_limits<int>::max)() ||
+					int64_t{hunksDifferences.startTo} + hunksDifferences.countTo > (std::numeric_limits<int>::max)())
+					ThrowError(stream, UnifiedDiffParserException::ErrorInvalidHunks);
 
 				return hunksDifferences;
 			}
@@ -227,26 +324,59 @@ namespace FileFilter
 	//-------------------------------------------------------------------------
 	std::vector<int> UnifiedDiffParser::ExtractUpdatedLines(		
 		Stream& stream,
-		const std::wstring& hunksDifferencesLine) const
+		const std::wstring& hunksDifferencesLine, Mode mode) const
 	{
 		HunksDifferences hunksDifferences = ExtractHunksDifferences(stream, hunksDifferencesLine);
-
 		std::wstring lineStr;
-		int currentLine = hunksDifferences.startTo;
-		const int endLine = hunksDifferences.startTo + hunksDifferences.countTo;
+		int64_t currentLine = int64_t{hunksDifferences.startTo} +
+			(hunksDifferences.countTo == 0 ? 1 : 0);
+		int64_t oldRemaining = hunksDifferences.countFrom;
+		int64_t newRemaining = hunksDifferences.countTo;
+		if (currentLine + newRemaining > (std::numeric_limits<int>::max)())
+			ThrowError(stream, UnifiedDiffParserException::ErrorInvalidHunks);
 		std::vector<int> updatedLines;
-		while (currentLine < endLine && stream.GetLine(lineStr))
-		{
-			if (!boost::algorithm::starts_with(lineStr, "-") &&
-				!boost::algorithm::starts_with(lineStr, "\\")) // For: \ No newline at end of file
+		bool deletion = false;
+		bool addition = false;
+		auto anchors = [&] {
+			if (mode == Mode::NewSideChanges && deletion && !addition)
 			{
-				if (boost::algorithm::starts_with(lineStr, "+"))
-					updatedLines.push_back(currentLine);
-				++currentLine;
+				if (currentLine > 1)
+					updatedLines.push_back(static_cast<int>(currentLine - 1));
+				updatedLines.push_back(static_cast<int>((std::max)(int64_t{1}, currentLine)));
 			}
+			deletion = false;
+			addition = false;
+		};
+		while ((oldRemaining || newRemaining) && stream.GetLine(lineStr))
+		{
+			if (!lineStr.empty() && lineStr.back() == L'\r')
+				lineStr.pop_back();
+			if (boost::algorithm::starts_with(lineStr, L"\\"))
+				continue;
+			if (lineStr.empty())
+				ThrowError(stream, UnifiedDiffParserException::ErrorContextHunks);
+			switch (lineStr.front())
+			{
+			case L'-': --oldRemaining; deletion = true; break;
+			case L'+':
+				addition = true;
+				updatedLines.push_back(static_cast<int>(currentLine));
+				++currentLine;
+				--newRemaining;
+				break;
+			case L' ':
+				anchors();
+				++currentLine;
+				--oldRemaining;
+				--newRemaining;
+				break;
+			default: ThrowError(stream, UnifiedDiffParserException::ErrorContextHunks);
+			}
+			if (oldRemaining < 0 || newRemaining < 0)
+				ThrowError(stream, UnifiedDiffParserException::ErrorContextHunks);
 		}
-
-		if (currentLine != endLine)
+		anchors();
+		if (oldRemaining || newRemaining)
 			ThrowError(stream, UnifiedDiffParserException::ErrorContextHunks);
 		return updatedLines;
 	}

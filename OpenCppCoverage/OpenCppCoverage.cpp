@@ -33,6 +33,7 @@
 #include "CppCoverage/RvaCoverageRunner.hpp"
 #include "CppCoverage/RvaCoverageResolver.hpp"
 #include "CppCoverage/RvaCoverage.hpp"
+#include "CppCoverage/RvaSelectionPlan.hpp"
 #include "CppCoverage/CoverageFilterManager.hpp"
 #include "FileFilter/ModuleInfo.hpp"
 #include "FileFilter/FileInfo.hpp"
@@ -59,6 +60,16 @@ namespace OpenCppCoverage
 {
 	namespace
 	{
+		bool SameFilePath(const fs::path& left, const fs::path& right)
+		{
+			std::error_code error;
+			if (fs::equivalent(left, right, error))
+				return true;
+			const auto fullLeft = fs::absolute(left).lexically_normal().wstring();
+			const auto fullRight = fs::absolute(right).lexically_normal().wstring();
+			return CompareStringOrdinal(fullLeft.c_str(), -1, fullRight.c_str(), -1, TRUE) == CSTR_EQUAL;
+		}
+
 		//-----------------------------------------------------------------------------
 		std::wstring GetDefaultPathPrefix(const cov::Options& options)
 		{
@@ -199,6 +210,25 @@ namespace OpenCppCoverage
 		        const Exporter::ExporterPluginManager& exporterPluginManager,
 		        std::shared_ptr<Tools::WarningManager> warningManager)
 		{
+			if (options.GetMakeRvasPath())
+			{
+				cov::MakeRvaSelectionPlan(*options.GetDiffPath(), *options.GetSourceRoot(),
+					options.GetModuleDirectories(), options.GetModulePatterns(),
+					options.GetSubstitutePdbSourcePaths(), options.GetExpandLines(), *options.GetMakeRvasPath());
+				return 0;
+			}
+			if (options.GetRvasPath())
+			{
+				if (SameFilePath(*options.GetRvasPath(), L"LastCoverageResults.log"))
+					throw std::runtime_error("The ROI input cannot share the coverage log path");
+				for (const auto& output : options.GetExports())
+				{
+					const auto path = output.GetParameter() ? fs::path{*output.GetParameter()} :
+						fs::path{GetDefaultPathPrefix(options) + L".cov"};
+					if (SameFilePath(path, *options.GetRvasPath()))
+						throw std::runtime_error("RVA coverage cannot overwrite its ROI selection file");
+				}
+			}
 			InitLogger(options);
 
 			auto coveraDatas = LoadInputCoverageDatas(options);
@@ -246,6 +276,8 @@ namespace OpenCppCoverage
 
 				runCoverageSettings.SetCoverChildren(options.IsCoverChildrenModeEnabled());
 				runCoverageSettings.SetSamplePercent(options.GetSamplePercent());
+				if (options.GetRvasPath())
+					runCoverageSettings.SetRvasPath(*options.GetRvasPath());
 				if (options.GetProcessPatterns())
 					runCoverageSettings.SetProcessPatterns(*options.GetProcessPatterns());
 				runCoverageSettings.SetContinueAfterCppException(options.IsContinueAfterCppExceptionModeEnabled());
@@ -272,7 +304,8 @@ namespace OpenCppCoverage
 			{
 				auto raw = cov::RvaCoverageRunner{}.CollectExisting(
 				    coverageFilterSettings, *options.GetProcessPatterns(), *options.GetDuration(),
-				    options.IsProcessWatchEnabled(), options.GetSamplePercent());
+				    options.IsProcessWatchEnabled(), options.GetSamplePercent(),
+				    options.GetRvasPath() ? *options.GetRvasPath() : fs::path{});
 				for (const auto& output : options.GetExports())
 				{
 					const auto path = output.GetParameter() ? fs::path{*output.GetParameter()} :

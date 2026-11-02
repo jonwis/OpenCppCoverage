@@ -30,8 +30,10 @@ namespace FileFilter
 		const static std::wstring ToFilePrefix;
 
 		UnifiedDiffParser() = default;
-				
-		std::vector<File> Parse(std::wistream&) const;		
+
+		enum class Mode { AddedLines, NewSideChanges };
+		std::vector<File> Parse(std::wistream&) const;
+		std::vector<File> Parse(std::wistream&, Mode) const;
 
 	private:
 		UnifiedDiffParser(const UnifiedDiffParser&) = delete;
@@ -49,14 +51,13 @@ namespace FileFilter
 
 		std::vector<int> ExtractUpdatedLines(
 							Stream&, 
-							const std::wstring& hunksDifferencesLine) const;
+							const std::wstring& hunksDifferencesLine, Mode) const;
 
 		void ThrowError(const Stream&, const std::wstring&) const;
 
 		void FillUpdatedLines(
 			const std::wstring& line,
 			std::vector<File>& files,
-			Stream& stream) const;
+			Stream& stream, Mode) const;
 	};
 }
-

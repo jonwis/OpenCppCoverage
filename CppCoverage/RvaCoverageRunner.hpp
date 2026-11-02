@@ -13,11 +13,13 @@ namespace CppCoverage
 	class RunCoverageSettings;
 	class CoverageFilterSettings;
 	class Patterns;
+	struct RvaSelectionModule;
 
 	class CPPCOVERAGE_DLL RvaCoverageSampling
 	{
 	public:
 		void Select(std::vector<RvaBlock>& blocks, unsigned percent);
+		void Select(std::vector<RvaBlock>& blocks, const RvaSelectionModule& selection);
 
 	private:
 		std::optional<std::mt19937> random_;
@@ -31,7 +33,8 @@ namespace CppCoverage
 		RvaCoverage RunCoverage(const RunCoverageSettings&);
 		RvaCoverage CollectExisting(
 		    const CoverageFilterSettings&, const Patterns&, unsigned durationSeconds,
-		    bool watchProcesses = false, unsigned samplePercent = 100);
+		    bool watchProcesses = false, unsigned samplePercent = 100,
+		    const std::filesystem::path& rvasPath = {});
 
 	private:
 		struct State;

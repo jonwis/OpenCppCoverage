@@ -44,6 +44,8 @@ namespace CppCoverage
 		void SetCoverChildren(bool);
 		void SetSamplePercent(unsigned percent) { samplePercent_ = percent; }
 		unsigned GetSamplePercent() const { return samplePercent_; }
+		void SetRvasPath(const std::filesystem::path& path) { rvasPath_ = path; }
+		const boost::optional<std::filesystem::path>& GetRvasPath() const { return rvasPath_; }
 		void SetProcessPatterns(const Patterns& patterns) { processPatterns_ = patterns; }
 		const boost::optional<Patterns>& GetProcessPatterns() const { return processPatterns_; }
 		void SetContinueAfterCppException(bool);
@@ -65,6 +67,7 @@ namespace CppCoverage
 	private:
 		StartInfo startInfo_;
 		unsigned samplePercent_ = 100;
+		boost::optional<std::filesystem::path> rvasPath_;
 		boost::optional<Patterns> processPatterns_;
 		CoverageFilterSettings coverageFilterSettings_;
 		std::vector<UnifiedDiffSettings> unifiedDiffSettings_;
